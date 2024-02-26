@@ -1,0 +1,19 @@
+version: '3'
+services:
+  log:
+    image: modsecurity_parser
+    container_name: log
+    environment:
+      - LOG_PATH=audit.log
+    volumes: 
+      - ./db:/db
+      - /var/log/apache2/modsec:/log
+  fe:
+    image: flashspys/nginx-static
+    container_name: fe
+    ports:
+      - 5500:80
+    volumes: 
+      - ./web:/static
+
+    

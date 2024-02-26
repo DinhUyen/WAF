@@ -1,0 +1,93 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Log Viewer</title>
+    <style>
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 20px;
+        }
+
+        th,
+        td {
+            border: 1px solid #ddd;
+            padding: 8px;
+            text-align: left;
+        }
+
+        th {
+            background-color: #f2f2f2;
+        }
+
+        .expand-btn {
+            cursor: pointer;
+            color: blue;
+            text-decoration: underline;
+        }
+
+        .input-container {
+            margin-bottom: 10px;
+        }
+        label {
+            margin-left: 15px;
+        }
+        button {
+            margin-left: 15px;
+        }
+        
+    </style>
+</head>
+
+<body>
+    <!-- host input -->
+    <div class="input-container">
+        <label for="host"> Host:</label>
+        <input type="text" id="host" value="http://192.168.157.183:5555">
+    </div>
+    <!-- number input -->
+    <div class="input-container">
+        <label for="number"> Number events:</label>
+        <input type="text" id="number" value="10">
+
+        <label for="page"> Page:</label>
+        <input type="text" id="page" value="1">
+
+        <label for="filters"> Filters:</label>
+        <input type="text" id="filters" value="">
+
+        <label for="distinct"> Distinct:</label>
+        <input type="checkbox" id="distinct" value="0">
+
+    </div>
+    <!-- button -->
+    <div class="input-container">
+        <button onclick="fetchData()">Fetch Data</button>
+    </div>
+
+    <h1>Log Viewer</h1>
+    <table id="logTable">
+        <thead>
+            <tr>
+                <th>ID</th>
+                <th>Remote Address</th>
+                <th>Remote Port</th>
+                <th>Local Address</th>
+                <th>Local Port</th>
+                <th>Request</th>
+                <th>Time</th>
+                <th>Msg</th>
+                <th>Message</th>
+                <!-- <th></th> -->
+            </tr>
+        </thead>
+        <tbody id="logBody"></tbody>
+    </table>
+
+    <script src="script.js"></script>
+</body>
+
+</html>
