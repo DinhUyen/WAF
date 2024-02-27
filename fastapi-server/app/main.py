@@ -29,30 +29,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# CREATE TABLE IF NOT EXISTS MODSECLOG (
-#         id INTEGER PRIMARY KEY AUTOINCREMENT,
-#         remote_address TEXT ,
-#         remote_port TEXT,
-#         local_address TEXT,
-#         local_port TEXT,
-#         request TEXT,
-#         time TEXT,
-#         msg TEXT,
-#         message TEXT
-
-# {
-#     "id": 146,
-#     "remote_address": "192.168.157.183",
-#     "remote_port": "33248",
-#     "local_address": "192.168.157.183",
-#     "local_port": "80",
-#     "request": "GET /favicon.ico HTTP/1.1",
-#     "time": "10/Jan/2024:23:06:53.534501 +0700",
-#     "msg": "Not mesage found",
-#     "message": "Apache-Error: [file \"mod_proxy_http.c\"] [line 2054] [level 3] AH01114: HTTP: failed to make connection to backend: 192.168.157.139"
-#   }
-
-SQLITE_DATABASE_URL  = "sqlite:////home/kali/Desktop/ModSercurityPaser/db/modsec.db"
+SQLITE_DATABASE_URL  = "sqlite:////home/kali/Desktop/WAF/db/modsec.db"
 engine = create_engine(SQLITE_DATABASE_URL,connect_args={"check_same_thread": False})
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
@@ -69,7 +46,29 @@ class ModsecLog(Base):
     msg = Column(String)
     message = Column(String)
 
-
+class ModsecHost(Base):
+    __tablename__ = "modsechost"
+    id = Column(Integer, primary_key=True, index=True, autoincrement=True)
+    port = Column(Integer, index=True)
+    servername = Column(String)
+    proxypreservehost = Column(String)
+    proxypass = Column(String)
+    proxypassreverse = Column(String)
+    errorlog = Column(String)
+    errordocument = Column(String)
+    protocol = Column(String)  # This will store either 'http' or 'https'
+    sslcertificatefile = Column(String, nullable=True)  # Only for HTTPS
+    sslcertificatekeyfile = Column(String, nullable=True)  # Only for HTTPS
+    sslengine = Column(String, nullable=True)  # Only for HTTPS
+    sslproxyengine = Column(String, nullable=True)  # Only for HTTPS
+class AgentUpdate(BaseModel):
+    servername: str
+    ProxyPreserveHost: str
+    ProxyPass: str
+    ProxyPassReverse: str
+    ErrorLog: str
+    ErrorDocument: str
+    protocol: str
 
 @app.get("/")
 def read_root():
@@ -225,98 +224,134 @@ def update_modsecurity(port: int, mode: str):
 
 
 #AGENT
-#add host
+@app.get("/getagent", tags=["agents"])
+def get_agent(number: int = 10, page: int = 1, distinct: int = 0, filters: Optional[str] = None):
+    db = SessionLocal()
+    try:
+        # Begin building the query
+        query = db.query(ModsecHost)
+        
+        # Apply filters if provided
+        if filters:
+            # Assuming filters is a JSON string with key-value pairs
+            # Convert the filters from JSON to a dictionary
+            filter_dict = json.loads(filters)
+            
+            # Apply the filters
+            for key, value in filter_dict.items():
+                query = query.filter(getattr(ModsecHost, key) == value)
+
+        # Apply distinct if needed
+        if distinct:
+            query = query.distinct()
+
+        # Calculate the offset for pagination
+        skip = (page - 1) * number
+
+        # Fetch the results with pagination
+        agents = query.order_by(ModsecHost.id.asc()).offset(skip).limit(number).all()
+
+        # Prepare the result list
+        result_list = []
+        for agent in agents:
+            result_list.append({
+                "id": agent.id,
+                "port": agent.port,
+                "servername": agent.servername,
+                "proxypreservehost": agent.proxypreservehost,
+                "proxypass": agent.proxypass,
+                "proxypassreverse": agent.proxypassreverse,
+                "errorlog": agent.errorlog,
+                "errordocument": agent.errordocument,
+                "protocol": agent.protocol,
+                "sslcertificatefile": agent.sslcertificatefile,
+                "sslcertificatekeyfile": agent.sslcertificatekeyfile,
+                "sslengine": agent.sslengine,
+                "sslproxyengine": agent.sslproxyengine
+            })
+
+        return result_list
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
 @app.post("/addagent", tags=["agents"])
 def add_agent(port: int, servername: str, ProxyPreserveHost: str, ProxyPass: str, ProxyPassReverse: str, ErrorLog: str, ErrorDocument: str, protocol: str):
     config_file_path = '/etc/apache2/sites-available/www.dvwa.com.conf'
     config_file_apache = '/etc/apache2/apache2.conf'
     
-    # Check if the port is already in the apache2.conf
     def check_port_in_apache_conf(port, file_content):
         listen_line = f"Listen {port}"
-        return any(line.strip() == listen_line for line in file_content)    
+        return any(line.strip() == listen_line for line in file_content)
+
+    def check_vhost_exists(port, servername, vhost_content):
+        vhost_line = f"<VirtualHost *:{port}>"
+        servername_line = f"ServerName {servername}"
+        inside_vhost = False
+        for line in vhost_content:
+            if vhost_line in line:
+                inside_vhost = True
+            elif inside_vhost and servername_line in line:
+                return True
+            elif inside_vhost and line.startswith('</VirtualHost>'):
+                inside_vhost = False
+        return False
+
     try:
-        # Read the current Apache2 config
         with open(config_file_apache, 'r') as file:
             apache_content = file.readlines()
         
-        # Check if the port is already listed in apache2.conf, if not, add it
         if not check_port_in_apache_conf(port, apache_content):
             with open(config_file_apache, 'a') as file:
-                file.write(f"\nListen {port}\n")
-            # Apache needs to be restart after changing the ports configuration
-                try:
-                    subprocess.run(['sudo', 'service', 'apache2', 'reload'], check=True)
-                except subprocess.CalledProcessError as e:
-                    
-                    raise HTTPException(status_code=500, detail=f"Failed to restart Apache: {e}")
+                file.write(f"Listen {port}\n")
+            subprocess.run(['sudo', 'service', 'apache2', 'reload'], check=True)
         
-        # Read the current VirtualHost config
         with open(config_file_path, 'r') as file:
             vhost_content = file.readlines()
         
-        # Check if a VirtualHost with the specified servername already exists
-        if any(servername in line for line in vhost_content):
-            raise HTTPException(status_code=400, detail="A VirtualHost with this ServerName already exists.")
-
-        # Append new VirtualHost to the end of the file
-        new_vhost = add_new_vhost_entry(port, servername, ProxyPreserveHost, ProxyPass, ProxyPassReverse , ErrorLog, ErrorDocument, protocol)
+        if check_vhost_exists(port, servername, vhost_content):
+            raise HTTPException(status_code=400, detail="VirtualHost with this port and ServerName already exists.")
+        
+        new_vhost = add_new_vhost_entry(port, servername, ProxyPreserveHost, ProxyPass, ProxyPassReverse, ErrorLog, ErrorDocument, protocol)
         with open(config_file_path, 'a') as file:
             file.write(new_vhost)
         
-        # Reload Apache to apply changes
-        # Example: subprocess.run(["sudo", "service", "apache2", "reload"])
-        # Ensure you handle this part securely as it can be a security risk
         restart_apache()
-        return {"message": "VirtualHost and port added successfully."}
+        
+        db = SessionLocal()
+
+        new_host = ModsecHost(
+            port=port,
+            servername=servername,
+            proxypreservehost=ProxyPreserveHost,
+            proxypass=ProxyPass,
+            proxypassreverse=ProxyPassReverse,
+            errorlog=ErrorLog,
+            errordocument=ErrorDocument,
+            protocol=protocol,
+            sslcertificatefile = "/home/kali/Desktop/localhost.crt" if protocol == 'https' else None,  # Only for HTTPS
+            sslcertificatekeyfile = "/home/kali/Desktop/localhost.key" if protocol == 'https' else None,  # Only for HTTPS
+            sslengine = "On" if protocol == 'https' else None,  # Only for HTTPS
+            sslproxyengine = "On" if protocol == 'https' else None # Only for HTTPS
+        )
+        
+        db.add(new_host)
+        db.commit()
+        
+        return {"message": "Host added successfully to Apache and database."}
+    except subprocess.CalledProcessError as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"Failed to restart Apache: {e}")
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"Failed to add host: {str(e)}")
+    finally:
+        db.close()
         
 #update host's config
 @app.put("/updateagent", tags=["agents"])
 def update_agent(port: int, servername: str, ProxyPreserveHost: str, ProxyPass: str, ProxyPassReverse: str, ErrorLog: str, ErrorDocument: str, protocol: str):
     config_file_path = '/etc/apache2/sites-available/www.dvwa.com.conf'
     config_file_apache = '/etc/apache2/apache2.conf'
-    
-    # Check if the port is already in the apache2.conf
-    def check_port_in_apache_conf(port, file_content):
-        listen_line = f"Listen {port}"
-        return any(line.strip() == listen_line for line in file_content)    
-    try:
-        # Read the current Apache2 config
-        with open(config_file_apache, 'r') as file:
-            apache_content = file.readlines()
-        
-        # Check if the port is already listed in apache2.conf, if not, add it
-        if not check_port_in_apache_conf(port, apache_content):
-            with open(config_file_apache, 'a') as file:
-                file.write(f"\nListen {port}\n")
-            # Apache needs to be restart after changing the ports configuration
-                try:
-                    subprocess.run(['sudo', 'service', 'apache2', 'reload'], check=True)
-                except subprocess.CalledProcessError as e:
-                    
-                    raise HTTPException(status_code=500, detail=f"Failed to restart Apache: {e}")
-        
-        # Read the current VirtualHost config
-        with open(config_file_path, 'r') as file:
-            vhost_content = file.readlines()
-        
-        # Check if a VirtualHost with the specified servername already exists
-        if any(servername in line for line in vhost_content):
-            raise HTTPException(status_code=400, detail="A VirtualHost with this ServerName already exists.")
 
-        # Append new VirtualHost to the end of the file
-        new_vhost = add_new_vhost_entry(port, servername, ProxyPreserveHost, ProxyPass, ProxyPassReverse , ErrorLog, ErrorDocument, protocol)
-        with open(config_file_path, 'a') as file:
-            file.write(new_vhost)
-        
-        # Reload Apache to apply changes
-        # Example: subprocess.run(["sudo", "service", "apache2", "reload"])
-        # Ensure you handle this part securely as it can be a security risk
-        restart_apache()
-        return {"message": "VirtualHost and port added successfully."}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
 if __name__ == "__main__":
     uvicorn.run("main:app", host="0.0.0.0", port=5555, reload=True)
