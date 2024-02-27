@@ -121,22 +121,30 @@ def get_log(number: int = 10,page: int = 1,distinct:int=0 ,filters: str = None):
     finally:
         db.close()
 @app.get("/getLogWithinTime", tags=["logs"])
-def get_log_within_time(time: int, number: int = 10, page: int = 1, distinct: int = 0, filters: str = None):
+def get_log_within_time(
+    time: int, number: int = 10, page: int = 1,
+    src_ip: str = None, dest_ip: str = None, filters: str = None
+):
     try:
         db = SessionLocal()
-        print(f"time: {time}, number: {number}, page: {page}, distinct: {distinct}, filters: {filters}")
+        print(f"time: {time}, number: {number}, page: {page}, src_ip: {src_ip}, dest_ip: {dest_ip}, filters: {filters}")
 
         query = db.query(ModsecLog)
 
-        # Áp dụng bộ lọc thời gian
+        # Apply time filter
         end_time = datetime.now()
         start_time = end_time - timedelta(hours=time)
-        print(start_time)
-        print(end_time)
         query = query.filter(ModsecLog.time >= start_time, ModsecLog.time <= end_time)
 
+        # Apply IP filters if provided
+        if src_ip:
+            query = query.filter(ModsecLog.remote_address == src_ip)
+        if dest_ip:
+            query = query.filter(ModsecLog.local_address == dest_ip)
         if filters:
             query = query.filter(ModsecLog.message.ilike(f"%{filters}%"))
+
+        total_records = query.count()  # Get the total records matching the filter before applying limit and offset
 
         log = query.order_by(ModsecLog.id.desc()).limit(number).offset((page - 1) * number).all()
 
@@ -154,15 +162,21 @@ def get_log_within_time(time: int, number: int = 10, page: int = 1, distinct: in
                 "msg": entry.msg,
                 "message": entry.message
             })
+        log_response = {
+            "total": total_records,
+            "data": list_result,
+            "limit": number,
+            "page": page,
+            "total_pages": (total_records + number - 1) // number  # Calculate total pages
+        }
 
-        return list_result
+        return log_response
 
     except Exception as e:
         print(e)
         raise HTTPException(status_code=500, detail="Internal Server Error")
     finally:
         db.close()
-
 #get IP of attacker within time
 @app.get("/getIPattackerWithinTime", tags=["logs"])
 def get_IP_attacker_within_time(time: int, number: int = 10, page: int = 1, distinct: int = 0, filters: str = None):

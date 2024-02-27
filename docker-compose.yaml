@@ -8,12 +8,5 @@ services:
     volumes: 
       - ./db:/db
       - /var/log/apache2/modsec:/log
-  fe:
-    image: flashspys/nginx-static
-    container_name: fe
-    ports:
-      - 5500:80
-    volumes: 
-      - ./web:/static
 
     

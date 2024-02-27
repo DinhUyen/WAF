@@ -22,7 +22,7 @@ class ModSecHost(Base):
     sslproxyengine = Column(String, nullable=True)
 
 # Connect to the SQLite database
-engine = create_engine('sqlite:////home/kali/Desktop/ModSercurityPaser/db/modsec.db')
+engine = create_engine('sqlite:////home/kali/Desktop/WAF/db/modsec.db')
 Base.metadata.create_all(engine)
 Session = sessionmaker(bind=engine)
 session = Session()
