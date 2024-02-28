@@ -285,25 +285,21 @@ def get_agent(number: int = 10, page: int = 1, distinct: int = 0, filters: Optio
 
 @app.post("/addagent", tags=["agents"])
 def add_agent(port: int, servername: str, ProxyPreserveHost: str, ProxyPass: str, ProxyPassReverse: str, ErrorLog: str, ErrorDocument: str, protocol: str):
-    config_file_path = '/etc/apache2/sites-available/www.dvwa.com.conf'
+    config_file_path = f'/etc/apache2/sites-available/{servername}.conf'
     config_file_apache = '/etc/apache2/apache2.conf'
-    
     def check_port_in_apache_conf(port, file_content):
         listen_line = f"Listen {port}"
         return any(line.strip() == listen_line for line in file_content)
-
-    def check_vhost_exists(port, servername, vhost_content):
-        vhost_line = f"<VirtualHost *:{port}>"
-        servername_line = f"ServerName {servername}"
-        inside_vhost = False
-        for line in vhost_content:
-            if vhost_line in line:
-                inside_vhost = True
-            elif inside_vhost and servername_line in line:
-                return True
-            elif inside_vhost and line.startswith('</VirtualHost>'):
-                inside_vhost = False
-        return False
+    db = SessionLocal()
+    def check_vhost_exists(port, servername):
+    # Kiểm tra xem có bản ghi nào có port hoặc servername như đã cho hay không
+        existing_host = db.query(ModsecHost).filter(or_(ModsecHost.Port == port, ModsecHost.ServerName == servername)).first()
+        if existing_host:
+            print("Host đã tồn tại")
+            return True  # Bản ghi đã tồn tại
+        else:
+            print("Host chưa tồn tại")
+            return False  # Bản ghi không tồn tại 
 
     try:
         with open(config_file_apache, 'r') as file:
@@ -313,45 +309,57 @@ def add_agent(port: int, servername: str, ProxyPreserveHost: str, ProxyPass: str
             with open(config_file_apache, 'a') as file:
                 file.write(f"Listen {port}\n")
             subprocess.run(['sudo', 'service', 'apache2', 'reload'], check=True)
-        
+        with open(config_file_path, 'a') as file:
+            pass
         with open(config_file_path, 'r') as file:
             vhost_content = file.readlines()
         
-        if check_vhost_exists(port, servername, vhost_content):
+        if check_vhost_exists(port, servername):
             raise HTTPException(status_code=400, detail="VirtualHost with this port and ServerName already exists.")
         
-        new_vhost = add_new_vhost_entry(port, servername, ProxyPreserveHost, ProxyPass, ProxyPassReverse, ErrorLog, ErrorDocument, protocol)
+        new_vhost = add_new_vhost_entry(port, servername, ProxyPreserveHost, f'/ {ProxyPass}', f'/ {ProxyPassReverse}', ErrorLog, f'403 {ErrorDocument}', protocol)
         with open(config_file_path, 'a') as file:
             file.write(new_vhost)
-        
+        symlink_command = [
+        'sudo', 'ln', '-s', 
+        f'/etc/apache2/sites-available/{servername}.conf', 
+        f'/etc/apache2/sites-enabled/{servername}.conf'
+        ]
+        print(symlink_command)
+        try:
+            subprocess.run(symlink_command, check=True)
+        except subprocess.CalledProcessError as e:
+            db.rollback()
+            raise HTTPException(status_code=500, detail=f"Failed to create symbolic link: {e}")
         restart_apache()
-        
-        db = SessionLocal()
-
+                
         new_host = ModsecHost(
-            port=port,
-            servername=servername,
-            proxypreservehost=ProxyPreserveHost,
-            proxypass=ProxyPass,
-            proxypassreverse=ProxyPassReverse,
-            errorlog=ErrorLog,
-            errordocument=ErrorDocument,
-            protocol=protocol,
-            sslcertificatefile = "/home/kali/Desktop/localhost.crt" if protocol == 'https' else None,  # Only for HTTPS
-            sslcertificatekeyfile = "/home/kali/Desktop/localhost.key" if protocol == 'https' else None,  # Only for HTTPS
-            sslengine = "On" if protocol == 'https' else None,  # Only for HTTPS
-            sslproxyengine = "On" if protocol == 'https' else None # Only for HTTPS
+            Port=port,
+            ServerName=servername,
+            ProxyPreserveHost=ProxyPreserveHost,
+            ProxyPass=ProxyPass, 
+            ProxyPassReverse=ProxyPassReverse,
+            ErrorLog=ErrorLog,
+            ErrorDocument= ErrorDocument,
+            Protocol=protocol,
+            SSLCertificateFile = "/home/kali/Desktop/localhost.crt" if protocol == 'https' else None,  # Only for HTTPS
+            SSLCertificateKeyFile = "/home/kali/Desktop/localhost.key" if protocol == 'https' else None,  # Only for HTTPS
+            SSLEngine = "On" if protocol == 'https' else None,  # Only for HTTPS
+            SSLProxyEngine = "On" if protocol == 'https' else None # Only for HTTPS
         )
-        
         db.add(new_host)
         db.commit()
         
         return {"message": "Host added successfully to Apache and database."}
     except subprocess.CalledProcessError as e:
+        print("rollback")
+        print(e)
         db.rollback()
         raise HTTPException(status_code=500, detail=f"Failed to restart Apache: {e}")
     except Exception as e:
         db.rollback()
+        error_message = f"Failed to add host: {repr(e)}"
+        print(error_message)
         raise HTTPException(status_code=500, detail=f"Failed to add host: {str(e)}")
     finally:
         db.close()
