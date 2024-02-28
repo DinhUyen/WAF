@@ -14,6 +14,7 @@ from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
 from datetime import datetime, timedelta  # Thêm timedelta vào import
 from sqlalchemy import func
+from sqlalchemy import or_
 from ruleEngine import update_modsecurity_config
 from ruleEngine import restart_apache
 from ruleEngine import add_new_vhost_entry
@@ -241,43 +242,44 @@ def update_modsecurity(port: int, mode: str):
 def get_agent(number: int = 10, page: int = 1, distinct: int = 0, filters: Optional[str] = None):
     db = SessionLocal()
     try:
-        # Begin building the query
         query = db.query(ModsecHost)
-        
-        # Apply filters if provided
         if filters:
-            filter_dict = json.loads(filters)
-            for key, value in filter_dict.items():
-                query = query.filter(getattr(ModsecHost, key) == value)
-        if distinct:
-            query = query.distinct()
-
-        # Calculate the offset for pagination
+            # Construct a list of ilike filter conditions for all columns
+            filter_conditions = []
+            for column in ModsecHost.__table__.columns:
+                filter_conditions.append(column.ilike(f"%{filters}%"))
+            
+            # Combine all filter conditions with OR
+            query = query.filter(or_(*filter_conditions))
         skip = (page - 1) * number
-
-        # Fetch the results with pagination
-        agents = query.order_by(ModsecHost.id.asc()).offset(skip).limit(number).all()
-
-        # Prepare the result list
+        query = query.order_by(ModsecHost.id.asc())
+        total = query.count()
+        agents = query.offset(skip).limit(number).all()
         result_list = []
         for agent in agents:
             result_list.append({
                 "id": agent.id,
-                "port": agent.port,
-                "servername": agent.servername,
-                "proxypreservehost": agent.proxypreservehost,
-                "proxypass": agent.proxypass,
-                "proxypassreverse": agent.proxypassreverse,
-                "errorlog": agent.errorlog,
-                "errordocument": agent.errordocument,
-                "protocol": agent.protocol,
-                "sslcertificatefile": agent.sslcertificatefile,
-                "sslcertificatekeyfile": agent.sslcertificatekeyfile,
-                "sslengine": agent.sslengine,
-                "sslproxyengine": agent.sslproxyengine
+                "Port": agent.Port,
+                "ServerName": agent.ServerName,
+                "ProxyPreserveHost": agent.ProxyPreserveHost,
+                "ProxyPass": agent.ProxyPass,
+                "ProxyPassReverse": agent.ProxyPassReverse,
+                "ErrorLog": agent.ErrorLog,
+                "ErrorDocument": agent.ErrorDocument,
+                "Protocol": agent.Protocol,
+                "SSLCertificateFile": agent.SSLCertificateFile,
+                "SSLCertificateKeyFile": agent.SSLCertificateKeyFile,
+                "SSLEngine": agent.SSLEngine,
+                "SSLProxyEngine": agent.SSLProxyEngine
             })
 
-        return result_list
+        response = {
+            "total": total,
+            "limit": number,
+            "page": page,
+            "data": result_list
+        }
+        return response
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -355,8 +357,8 @@ def add_agent(port: int, servername: str, ProxyPreserveHost: str, ProxyPass: str
         db.close()
         
 #update host's config
-@app.put("/updatehost/{host_id}", tags=["agents"])
-def update_host(host_id: int, host_update: HostUpdate):
+@app.put("/updateagent/{host_id}", tags=["agents"])
+def update_agent(host_id: int, host_update: HostUpdate):
     db = SessionLocal()
     ssl_lines = [
     "    SSLEngine on\n",
