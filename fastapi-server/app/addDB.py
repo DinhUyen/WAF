@@ -6,20 +6,20 @@ from sqlalchemy.orm import sessionmaker
 Base = declarative_base()
 
 class ModSecHost(Base):
-    __tablename__ = 'modsechost'
+    __tablename__ = 'MODSECHOST'
     id = Column(Integer, primary_key=True, index=True, autoincrement=True)
-    port = Column(Integer, index=True)
-    servername = Column(String)
-    proxypreservehost = Column(String)
-    proxypass = Column(String)
-    proxypassreverse = Column(String)
-    errorlog = Column(String)
-    errordocument = Column(String)
-    protocol = Column(String)
-    sslcertificatefile = Column(String, nullable=True)
-    sslcertificatekeyfile = Column(String, nullable=True)
-    sslengine = Column(String, nullable=True)
-    sslproxyengine = Column(String, nullable=True)
+    Port = Column(Integer, index=True)
+    ServerName = Column(String)
+    ProxyPreserveHost = Column(String)
+    ProxyPass = Column(String)
+    ProxyPassReverse = Column(String)
+    ErrorLog = Column(String)
+    ErrorDocument = Column(String)
+    Protocol = Column(String)
+    SSLCertificateFile = Column(String, nullable=True)
+    SSLCertificateKeyFile = Column(String, nullable=True)
+    SSLEngine = Column(String, nullable=True)
+    SSLProxyEngine = Column(String, nullable=True)
 
 # Connect to the SQLite database
 engine = create_engine('sqlite:////home/kali/Desktop/WAF/db/modsec.db')
@@ -30,58 +30,58 @@ session = Session()
 # Add new entries to the database
 hosts_data = [
     {
-        "port": 80,
-        "servername": "www.dvwa.com",
-        "proxypreservehost": "On",
-        "proxypass": "http://192.168.157.139:8005/",
-        "proxypassreverse": "http://192.168.157.139:8005/",
-        "errorlog": "/var/log/apache2/errors_80.log",
-        "errordocument": "/403.html",
-        "protocol": "http"
+        "Port": 80,
+        "ServerName": "www.dvwa.com",
+        "ProxyPreserveHost": "On",
+        "ProxyPass": "http://192.168.157.139:8005/",
+        "ProxyPassReverse": "http://192.168.157.139:8005/",
+        "ErrorLog": "/var/log/apache2/errors_80.log",
+        "ErrorDocument": "/403.html",
+        "Protocol": "http"
     },
     {
-        "port": 81,
-        "servername": "www.dvwa.com",
-        "proxypreservehost": "On",
-        "proxypass": "http://192.168.157.135/",
-        "proxypassreverse": "http://192.168.157.135/",
-        "errorlog": "/var/log/apache2/errors_81.log",
-        "errordocument": "/403.html",
-        "protocol": "http"
+        "Port": 81,
+        "ServerName": "www.dvwa.com",
+        "ProxyPreserveHost": "On",
+        "ProxyPass": "http://192.168.157.135/",
+        "ProxyPassReverse": "http://192.168.157.135/",
+        "ErrorLog": "/var/log/apache2/errors_81.log",
+        "ErrorDocument": "/403.html",
+        "Protocol": "http"
     },
     {
-        "port": 7071,
-        "servername": "localhost",
-        "protocol": "https",
-        "sslcertificatefile": "/home/kali/Desktop/localhost.crt",
-        "sslcertificatekeyfile": "/home/kali/Desktop/localhost.key",
-        "sslengine": "on",
-        "sslproxyengine": "on",
-        "proxypass": "https://192.168.157.185:7071/",
-        "proxypassreverse": "https://192.168.157.185:7071/",
-        "errorlog": "/var/log/apache2/errors_443.log"
+        "Port": 7071,
+        "ServerName": "localhost",
+        "Protocol": "https",
+        "SSLCertificateFile": "/home/kali/Desktop/localhost.crt",
+        "SSLCertificateKeyFile": "/home/kali/Desktop/localhost.key",
+        "SSLEngine": "on",
+        "SSLProxyEngine": "on",
+        "ProxyPass": "https://192.168.157.185:7071/",
+        "ProxyPassReverse": "https://192.168.157.185:7071/",
+        "ErrorLog": "/var/log/apache2/errors_443.log"
     },
     {
-        "port": 443,
-        "servername": "localhost",
-        "protocol": "https",
-        "sslcertificatefile": "/home/kali/Desktop/localhost.crt",
-        "sslcertificatekeyfile": "/home/kali/Desktop/localhost.key",
-        "sslengine": "on",
-        "sslproxyengine": "on",
-        "proxypass": "https://192.168.157.185:8443/",
-        "proxypassreverse": "https://192.168.157.185:8443/",
-        "errorlog": "/var/log/apache2/errors_443.log"
+        "Port": 443,
+        "ServerName": "localhost",
+        "Protocol": "https",
+        "SSLCertificateFile": "/home/kali/Desktop/localhost.crt",
+        "SSLCertificateKeyFile": "/home/kali/Desktop/localhost.key",
+        "SSLEngine": "on",
+        "SSLProxyEngine": "on",
+        "ProxyPass": "https://192.168.157.185:8443/",
+        "ProxyPassReverse": "https://192.168.157.185:8443/",
+        "ErrorLog": "/var/log/apache2/errors_443.log"
     },
     {
-        "port": 82,
-        "servername": "uyen.com",
-        "proxypreservehost": "On",
-        "proxypass": "http://192.168.157.139:8005/",
-        "proxypassreverse": "http://192.168.157.139:8005/",
-        "errorlog": "/var/log/apache2/errors_80.log",
-        "errordocument": "/403.html",
-        "protocol": "http"
+        "Port": 82,
+        "ServerName": "uyen.com",
+        "ProxyPreserveHost": "On",
+        "ProxyPass": "http://192.168.157.139:8005/",
+        "ProxyPassReverse": "http://192.168.157.139:8005/",
+        "ErrorLog": "/var/log/apache2/errors_80.log",
+        "ErrorDocument": "/403.html",
+        "Protocol": "http"
     }
 ]
 

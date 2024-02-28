@@ -1,7 +1,7 @@
 from typing import Optional
 from fastapi import FastAPI,Request,HTTPException, Depends
 from fastapi import HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 import time
 import json
 from datetime import datetime
@@ -49,26 +49,25 @@ class ModsecLog(Base):
 class ModsecHost(Base):
     __tablename__ = "modsechost"
     id = Column(Integer, primary_key=True, index=True, autoincrement=True)
-    port = Column(Integer, index=True)
-    servername = Column(String)
-    proxypreservehost = Column(String)
-    proxypass = Column(String)
-    proxypassreverse = Column(String)
-    errorlog = Column(String)
-    errordocument = Column(String)
-    protocol = Column(String)  # This will store either 'http' or 'https'
-    sslcertificatefile = Column(String, nullable=True)  # Only for HTTPS
-    sslcertificatekeyfile = Column(String, nullable=True)  # Only for HTTPS
-    sslengine = Column(String, nullable=True)  # Only for HTTPS
-    sslproxyengine = Column(String, nullable=True)  # Only for HTTPS
-class AgentUpdate(BaseModel):
-    servername: str
-    ProxyPreserveHost: str
-    ProxyPass: str
-    ProxyPassReverse: str
-    ErrorLog: str
-    ErrorDocument: str
-    protocol: str
+    Port = Column(Integer, index=True)
+    ServerName = Column(String)
+    ProxyPreserveHost = Column(String)
+    ProxyPass = Column(String)
+    ProxyPassReverse = Column(String)
+    ErrorLog = Column(String)
+    ErrorDocument = Column(String)
+    Protocol = Column(String)  # This will store either 'http' or 'https'
+    SSLCertificateFile = Column(String, nullable=True)  # Only for HTTPS
+    SSLCertificateKeyFile = Column(String, nullable=True)  # Only for HTTPS
+    SSLEngine = Column(String, nullable=True)  # Only for HTTPS
+    SSLProxyEngine = Column(String, nullable=True)  # Only for HTTPS
+class HostUpdate(BaseModel):
+    ProxyPreserveHost: Optional[str] = Field(default="")
+    ProxyPass: Optional[str] = Field(default="")
+    ProxyPassReverse: Optional[str] = Field(default="")
+    ErrorLog: Optional[str] = Field(default="")
+    ErrorDocument: Optional[str] = Field(default="")
+    Protocol: Optional[str] = Field(default="")
 
 @app.get("/")
 def read_root():
@@ -247,15 +246,9 @@ def get_agent(number: int = 10, page: int = 1, distinct: int = 0, filters: Optio
         
         # Apply filters if provided
         if filters:
-            # Assuming filters is a JSON string with key-value pairs
-            # Convert the filters from JSON to a dictionary
             filter_dict = json.loads(filters)
-            
-            # Apply the filters
             for key, value in filter_dict.items():
                 query = query.filter(getattr(ModsecHost, key) == value)
-
-        # Apply distinct if needed
         if distinct:
             query = query.distinct()
 
@@ -362,10 +355,112 @@ def add_agent(port: int, servername: str, ProxyPreserveHost: str, ProxyPass: str
         db.close()
         
 #update host's config
-@app.put("/updateagent", tags=["agents"])
-def update_agent(port: int, servername: str, ProxyPreserveHost: str, ProxyPass: str, ProxyPassReverse: str, ErrorLog: str, ErrorDocument: str, protocol: str):
-    config_file_path = '/etc/apache2/sites-available/www.dvwa.com.conf'
-    config_file_apache = '/etc/apache2/apache2.conf'
+@app.put("/updatehost/{host_id}", tags=["agents"])
+def update_host(host_id: int, host_update: HostUpdate):
+    db = SessionLocal()
+    ssl_lines = [
+    "    SSLEngine on\n",
+    "    SSLCertificateFile /home/kali/Desktop/localhost.crt\n",
+    "    SSLCertificateKeyFile /home/kali/Desktop/localhost.key\n",
+    "    ProxyRequests Off\n",
+    "    SSLEngine On\n",
+    "    SSLProxyEngine On\n",
+    "    SSLProxyVerify none\n",
+    "    SSLProxyCheckPeerCN off\n",
+    "    SSLProxyCheckPeerName off\n"
+]
+    # Fetch the host from the database
+    db_host = db.query(ModsecHost).filter(ModsecHost.id == host_id).first()
+    config_file_path = f'/etc/apache2/sites-available/{db_host.ServerName}.conf'
+    if db_host is None:
+        raise HTTPException(status_code=404, detail="Host not found")
+
+    # Read the Apache configuration file
+    with open(config_file_path, 'r') as file:
+        vhost_content = file.readlines()
+
+    # Initialize a flag to determine if the protocol has changed
+    protocol_changed = False
+    config_changed = False
+
+    # Check and update fields if they are provided in the request
+    for var, value in vars(host_update).items():
+        if value:
+            # Update the field in the database
+            setattr(db_host, var, value)
+            print(var)
+            # Check if protocol is being updated
+            if var == "Protocol":
+                protocol_changed = True
+                # If changing to HTTPS, add the SSL configuration
+                if value.lower() == 'https':
+                    db_host.SSLCertificateFile = "/home/kali/Desktop/localhost.crt"
+                    db_host.SSLCertificateKeyFile = "/home/kali/Desktop/localhost.key"
+                    db_host.SSLEngine = "On"
+                    db_host.SSLProxyEngine = "On"
+                # If changing to HTTP, remove the SSL configuration
+                elif value.lower() == 'http':
+                    db_host.SSLCertificateFile = None
+                    db_host.SSLCertificateKeyFile = None
+                    db_host.SSLEngine = None
+                    db_host.SSLProxyEngine = None
+            config_changed = True
+
+    db.commit()
+
+    # If the protocol has changed, update the Apache configuration
+    if config_changed:
+        vhost_started = False
+        closing_tag_index = None
+        index_ssl=None
+        for i, line in enumerate(vhost_content):
+            if line.strip().startswith("<IfModule mod_security2.c>"):
+                index_ssl=i
+                if protocol_changed:
+                    if db_host.Protocol.lower() == 'https':
+                # Add SSL configuration lines before the closing tag
+                        vhost_content.insert(index_ssl, ''.join(ssl_lines))
+                    elif db_host.Protocol.lower() == 'http':
+                # Remove SSL configuration lines
+                        vhost_content = [
+                            line for line in vhost_content
+                            if not any(ssl_config_line.strip() in line for ssl_config_line in ssl_lines)
+                        ]
+                break
+            else:
+                index_ssl=None
+            
+        for i, line in enumerate(vhost_content):
+            print(i)
+            if line.strip().startswith(f"<VirtualHost *:{db_host.Port}>"):
+                vhost_started = True
+            
+            # Update the directives inside the VirtualHost block
+            if vhost_started:
+                if line.strip().startswith("ProxyPreserveHost") and host_update.ProxyPreserveHost:
+                    vhost_content[i] = f"    ProxyPreserveHost {host_update.ProxyPreserveHost}\n"
+                elif line.strip().startswith("ProxyPass ") and host_update.ProxyPass:
+                    vhost_content[i] = f"    ProxyPass / {host_update.ProxyPass}\n"
+                elif line.strip().startswith("ProxyPassReverse ") and host_update.ProxyPassReverse:
+                    vhost_content[i] = f"    ProxyPassReverse / {host_update.ProxyPassReverse}\n"
+                elif line.strip().startswith("ErrorLog ") and host_update.ErrorLog:
+                    vhost_content[i] = f"    ErrorLog {host_update.ErrorLog}\n"
+                elif line.strip().startswith("ErrorDocument") and host_update.ErrorDocument:
+                    vhost_content[i] = f"    ErrorDocument 403 {host_update.ErrorDocument}\n"
+            elif vhost_started and "</VirtualHost>" in line.strip():
+                vhost_started = False
+                    
+                
+
+
+    # Write the updated content back to the Apache configuration file
+        with open(config_file_path, 'w') as file:
+            file.writelines(vhost_content)
+
+    # Restart Apache to apply changes
+    restart_apache()
+
+    return {"message": "Host configuration updated successfully."}
 
 if __name__ == "__main__":
     uvicorn.run("main:app", host="0.0.0.0", port=5555, reload=True)
