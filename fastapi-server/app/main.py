@@ -62,6 +62,15 @@ class ModsecHost(Base):
     SSLCertificateKeyFile = Column(String, nullable=True)  # Only for HTTPS
     SSLEngine = Column(String, nullable=True)  # Only for HTTPS
     SSLProxyEngine = Column(String, nullable=True)  # Only for HTTPS
+class HostAdd(BaseModel):
+    Port: int
+    ServerName: str
+    ProxyPreserveHost: str
+    ProxyPass: str
+    ProxyPassReverse: str
+    ErrorLog: str
+    ErrorDocument: str
+    Protocol: str
 class HostUpdate(BaseModel):
     ProxyPreserveHost: Optional[str] = Field(default="")
     ProxyPass: Optional[str] = Field(default="")
@@ -69,6 +78,8 @@ class HostUpdate(BaseModel):
     ErrorLog: Optional[str] = Field(default="")
     ErrorDocument: Optional[str] = Field(default="")
     Protocol: Optional[str] = Field(default="")
+
+
 
 @app.get("/")
 def read_root():
@@ -284,8 +295,8 @@ def get_agent(number: int = 10, page: int = 1, distinct: int = 0, filters: Optio
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/addagent", tags=["agents"])
-def add_agent(port: int, servername: str, ProxyPreserveHost: str, ProxyPass: str, ProxyPassReverse: str, ErrorLog: str, ErrorDocument: str, protocol: str):
-    config_file_path = f'/etc/apache2/sites-available/{servername}.conf'
+def add_agent(agent: HostAdd):
+    config_file_path = f'/etc/apache2/sites-available/{agent.ServerName}.conf'
     config_file_apache = '/etc/apache2/apache2.conf'
     def check_port_in_apache_conf(port, file_content):
         listen_line = f"Listen {port}"
@@ -305,27 +316,26 @@ def add_agent(port: int, servername: str, ProxyPreserveHost: str, ProxyPass: str
         with open(config_file_apache, 'r') as file:
             apache_content = file.readlines()
         
-        if not check_port_in_apache_conf(port, apache_content):
+        if not check_port_in_apache_conf(agent.Port, apache_content):
             with open(config_file_apache, 'a') as file:
-                file.write(f"Listen {port}\n")
+                file.write(f"Listen {agent.Port}\n")
             subprocess.run(['sudo', 'service', 'apache2', 'reload'], check=True)
         with open(config_file_path, 'a') as file:
             pass
         with open(config_file_path, 'r') as file:
             vhost_content = file.readlines()
         
-        if check_vhost_exists(port, servername):
+        if check_vhost_exists(agent.Port, agent.ServerName):
             raise HTTPException(status_code=400, detail="VirtualHost with this port and ServerName already exists.")
         
-        new_vhost = add_new_vhost_entry(port, servername, ProxyPreserveHost, f'/ {ProxyPass}', f'/ {ProxyPassReverse}', ErrorLog, f'403 {ErrorDocument}', protocol)
+        new_vhost = add_new_vhost_entry(agent.Port, agent.ServerName, agent.ProxyPreserveHost, f'/ {agent.ProxyPass}', f'/ {agent.ProxyPassReverse}', agent.ErrorLog, f'403 {agent.ErrorDocument}', agent.Protocol)
         with open(config_file_path, 'a') as file:
             file.write(new_vhost)
         symlink_command = [
         'sudo', 'ln', '-s', 
-        f'/etc/apache2/sites-available/{servername}.conf', 
-        f'/etc/apache2/sites-enabled/{servername}.conf'
+        f'/etc/apache2/sites-available/{agent.ServerName}.conf', 
+        f'/etc/apache2/sites-enabled/{agent.ServerName}.conf'
         ]
-        print(symlink_command)
         try:
             subprocess.run(symlink_command, check=True)
         except subprocess.CalledProcessError as e:
@@ -334,18 +344,18 @@ def add_agent(port: int, servername: str, ProxyPreserveHost: str, ProxyPass: str
         restart_apache()
                 
         new_host = ModsecHost(
-            Port=port,
-            ServerName=servername,
-            ProxyPreserveHost=ProxyPreserveHost,
-            ProxyPass=ProxyPass, 
-            ProxyPassReverse=ProxyPassReverse,
-            ErrorLog=ErrorLog,
-            ErrorDocument= ErrorDocument,
-            Protocol=protocol,
-            SSLCertificateFile = "/home/kali/Desktop/localhost.crt" if protocol == 'https' else None,  # Only for HTTPS
-            SSLCertificateKeyFile = "/home/kali/Desktop/localhost.key" if protocol == 'https' else None,  # Only for HTTPS
-            SSLEngine = "On" if protocol == 'https' else None,  # Only for HTTPS
-            SSLProxyEngine = "On" if protocol == 'https' else None # Only for HTTPS
+            Port=agent.Port,
+            ServerName=agent.ServerName,
+            ProxyPreserveHost=agent.ProxyPreserveHost,
+            ProxyPass=agent.ProxyPass, 
+            ProxyPassReverse=agent.ProxyPassReverse,
+            ErrorLog=agent.ErrorLog,
+            ErrorDocument= agent.ErrorDocument,
+            Protocol=agent.Protocol,
+            SSLCertificateFile = "/home/kali/Desktop/localhost.crt" if agent.Protocol == 'https' else None,  # Only for HTTPS
+            SSLCertificateKeyFile = "/home/kali/Desktop/localhost.key" if agent.Protocol == 'https' else None,  # Only for HTTPS
+            SSLEngine = "On" if agent.Protocol == 'https' else None,  # Only for HTTPS
+            SSLProxyEngine = "On" if agent.Protocol == 'https' else None # Only for HTTPS
         )
         db.add(new_host)
         db.commit()
