@@ -482,5 +482,53 @@ def update_agent(host_id: int, host_update: HostUpdate):
 
     return {"message": "Host configuration updated successfully."}
 
+@app.delete("/deleteagent/{host_id}", tags=["agents"])
+def delete_agent(host_id: int):
+    db = SessionLocal()
+    def check_port_in_apache_conf(port, file_content):
+        listen_line = f"Listen {port}"
+        return any(line.strip() == listen_line for line in file_content)
+    try:
+        # Fetch the host from the database
+        db_host = db.query(ModsecHost).filter(ModsecHost.id == host_id).first()
+        if db_host is None:
+            raise HTTPException(status_code=404, detail="Host not found")
+
+        # Delete the host from the database
+        db.delete(db_host)
+        db.commit()
+        # Close port
+        config_file_apache = '/etc/apache2/apache2.conf'
+        with open(config_file_apache, 'r') as file:
+            apache_content = file.readlines()
+        if not check_port_in_apache_conf(db_host.Port, apache_content):
+            with open(config_file_apache, 'w') as file:
+                for line in apache_content:
+                    if line.strip() != f"Listen {db_host.Port}":
+                        file.write(line)
+            subprocess.run(['sudo', 'service', 'apache2', 'reload'], check=True)
+
+        # Delete the Apache configuration file
+        config_file_path = f'/etc/apache2/sites-available/{db_host.ServerName}.conf'
+        try:
+            subprocess.run(['sudo', 'rm', config_file_path], check=True)
+        except subprocess.CalledProcessError as e:
+            raise HTTPException(status_code=500, detail=f"Failed to delete Apache configuration file: {e}")
+
+        # Remove the symbolic link
+        try:
+            subprocess.run(['sudo', 'rm', f'/etc/apache2/sites-enabled/{db_host.ServerName}.conf'], check=True)
+        except subprocess.CalledProcessError as e:
+            raise HTTPException(status_code=500, detail=f"Failed to remove symbolic link: {e}")
+
+        # Restart Apache to apply changes
+        restart_apache()
+
+        return {"message": "Host deleted successfully."}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        db.close()
+
 if __name__ == "__main__":
     uvicorn.run("main:app", host="0.0.0.0", port=5555, reload=True)
