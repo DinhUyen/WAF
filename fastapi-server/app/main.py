@@ -19,6 +19,7 @@ from ruleEngine import update_modsecurity_config
 from ruleEngine import restart_apache
 from ruleEngine import add_new_vhost_entry
 from convertTime import convert_to_datetime
+from pathlib import Path
 app = FastAPI()
 origins = ["*"]
 
@@ -294,6 +295,45 @@ def get_agent(number: int = 10, page: int = 1, distinct: int = 0, filters: Optio
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+@app.get("/getagent/{host_id}", tags=["agents"])
+def get_agent_by_id(host_id: int):
+    db = SessionLocal()
+    try:
+        agent = db.query(ModsecHost).filter(ModsecHost.id == host_id).first()
+        if agent is None:
+            raise HTTPException(status_code=404, detail="Host not found")
+        elif agent.Protocol=="https":
+            return {
+                "id": agent.id,
+                "Port": agent.Port,
+                "ServerName": agent.ServerName,
+                "ProxyPreserveHost": agent.ProxyPreserveHost,
+                "ProxyPass": agent.ProxyPass,
+                "ProxyPassReverse": agent.ProxyPassReverse,
+                "ErrorLog": agent.ErrorLog,
+                "ErrorDocument": agent.ErrorDocument,
+                "Protocol": agent.Protocol,
+                "SSLCertificateFile": agent.SSLCertificateFile,
+                "SSLCertificateKeyFile": agent.SSLCertificateKeyFile,
+                "SSLEngine": agent.SSLEngine,
+                "SSLProxyEngine": agent.SSLProxyEngine
+            }
+        else:
+            return {
+                "id": agent.id,
+                "Port": agent.Port,
+                "ServerName": agent.ServerName,
+                "ProxyPreserveHost": agent.ProxyPreserveHost,
+                "ProxyPass": agent.ProxyPass,
+                "ProxyPassReverse": agent.ProxyPassReverse,
+                "ErrorLog": agent.ErrorLog,
+                "ErrorDocument": agent.ErrorDocument,
+                "Protocol": agent.Protocol
+            }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        db.close()
 @app.post("/addagent", tags=["agents"])
 def add_agent(agent: HostAdd):
     config_file_path = f'/etc/apache2/sites-available/{agent.ServerName}.conf'
@@ -501,11 +541,11 @@ def delete_agent(host_id: int):
         config_file_apache = '/etc/apache2/apache2.conf'
         with open(config_file_apache, 'r') as file:
             apache_content = file.readlines()
-        if not check_port_in_apache_conf(db_host.Port, apache_content):
+        if check_port_in_apache_conf(db_host.Port, apache_content):
             with open(config_file_apache, 'w') as file:
                 for line in apache_content:
                     if line.strip() != f"Listen {db_host.Port}":
-                        file.write(line)
+                        file.write(line)                        
             subprocess.run(['sudo', 'service', 'apache2', 'reload'], check=True)
 
         # Delete the Apache configuration file
@@ -516,12 +556,14 @@ def delete_agent(host_id: int):
             raise HTTPException(status_code=500, detail=f"Failed to delete Apache configuration file: {e}")
 
         # Remove the symbolic link
-        try:
-            subprocess.run(['sudo', 'rm', f'/etc/apache2/sites-enabled/{db_host.ServerName}.conf'], check=True)
-        except subprocess.CalledProcessError as e:
-            raise HTTPException(status_code=500, detail=f"Failed to remove symbolic link: {e}")
-
-        # Restart Apache to apply changes
+        symbolic_link = Path(f'/etc/apache2/sites-enabled/{db_host.ServerName}.conf')
+        if symbolic_link.exists():
+            try:
+                symbolic_link.unlink()
+            except Exception as e:
+                raise HTTPException(status_code=500, detail=f"Failed to remove file: {e}")
+        else:
+            pass
         restart_apache()
 
         return {"message": "Host deleted successfully."}
