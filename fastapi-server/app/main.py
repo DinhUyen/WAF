@@ -9,6 +9,7 @@ import asyncio
 import subprocess
 from fastapi.middleware.cors import CORSMiddleware
 import uvicorn
+import pandas as pd
 from sqlalchemy import create_engine, Column, Integer, String
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
@@ -20,6 +21,10 @@ from ruleEngine import restart_apache
 from ruleEngine import add_new_vhost_entry
 from convertTime import convert_to_datetime
 from pathlib import Path
+from tempfile import NamedTemporaryFile
+import matplotlib.pyplot as plt
+from collections import Counter
+from fastapi.responses import FileResponse
 app = FastAPI()
 origins = ["*"]
 
@@ -80,7 +85,33 @@ class HostUpdate(BaseModel):
     ErrorDocument: Optional[str] = Field(default="")
     Protocol: Optional[str] = Field(default="")
 
-
+class ModsecLog1(Base):
+    __tablename__ = "modseclog1"
+    id = Column(Integer, primary_key=True, index=True)
+    transaction_id = Column(String)
+    event_time = Column(String)
+    remote_address = Column(String) 
+    request_host = Column(String)
+    local_port = Column(String)
+    request_useragent = Column(String)
+    request_line = Column(String)
+    request_line_method = Column(String)
+    request_line_url = Column(String)
+    request_line_protocol = Column(String)
+    response_protocol = Column(String)
+    response_status = Column(String)
+    action = Column(String)
+    action_phase = Column(String)
+    action_message = Column(String)
+    message_type = Column(String)
+    message_description = Column(String)
+    message_rule_id = Column(String)
+    message_rule_file = Column(String)
+    message_msg = Column(String)
+    message_severity = Column(String)
+    message_accuracy = Column(String)
+    message_maturity = Column(String)
+    full_message_line = Column(String)
 
 @app.get("/")
 def read_root():
@@ -127,6 +158,40 @@ def get_log(number: int = 10,page: int = 1,distinct:int=0 ,filters: str = None):
             list_msg.append(entry.msg)
         del list_msg
         return list_result
+    except Exception as e:
+        print(e)
+        raise HTTPException(status_code=500, detail="Internal Server Error")
+    finally:
+        db.close()
+
+@app.get("/getCountLogWithinTime", tags=["logs"])
+def get_countLog_withintime():
+    # Tạo kết nối database
+    db = SessionLocal()
+    list_result = []
+
+    try:
+        current_time = datetime.now()
+        if current_time.minute > 0 or current_time.second > 0 or current_time.microsecond > 0:
+            current_time = current_time.replace(minute=0, second=0, microsecond=0) + timedelta(hours=1)
+        start_time = current_time - timedelta(days=1)
+        for i in range(8):
+            period_start = start_time + timedelta(hours=i*3)
+            period_end = start_time + timedelta(hours=(i+1)*3)
+
+            count = db.query(func.count(ModsecLog.id)).filter(
+                ModsecLog.time >= period_start,
+                ModsecLog.time < period_end
+            ).scalar()
+
+            # Thêm kết quả vào danh sách
+            list_result.append({
+                "time": f"{period_start.strftime('%H.%M')}-{period_end.strftime('%H.%M')}",
+                "number_of_prevented": count
+            })
+
+        return list_result
+
     except Exception as e:
         print(e)
         raise HTTPException(status_code=500, detail="Internal Server Error")
@@ -234,6 +299,199 @@ def get_detected_times(time:int):
     except Exception as e:
         print(e)
         raise HTTPException(status_code=500, detail="Internal Server Error")
+    finally:
+        db.close()
+
+#Graph
+@app.get("/grap_TOP10_IP_source_addresses_png", tags=["logs"])
+def grap_TOP10_IP_source_addresses_png():
+    db = SessionLocal()
+    try:
+        # query = db.query(ModsecLog.remote_address, func.count(ModsecLog.id)).group_by(ModsecLog.remote_address).order_by(func.count(ModsecLog.id).desc()).limit(10)
+        # result = query.all()
+        # list_result = []
+        # for ip, count in result:
+        #     list_result.append({
+        #         "ip": ip,
+        #         "count": count
+        #     })
+        # return list_result
+        src_ip_data = db.query(ModsecLog1.remote_address).all()
+    
+    # Count occurrences of each IP
+        src_ip_counter = Counter([data.remote_address for data in src_ip_data])
+        top10_ips = src_ip_counter.most_common(10)
+
+    # Plot the graph
+        fig, ax = plt.subplots()
+        ips, counts = zip(*top10_ips)
+        ax.bar(ips, counts)
+        ax.set_title("TOP 10 IP Source Addresses")
+        ax.set_ylabel("Count")
+        ax.set_xticklabels(ips, rotation=45, ha="right")
+
+    # Save the graph to a temporary file
+        temp_file = NamedTemporaryFile(delete=False, suffix='.png')
+        plt.savefig(temp_file.name)
+        plt.close(fig)
+    
+    # Return the graph as a file response
+        return FileResponse(path=temp_file.name, filename="top10_ip_source_addresses.png", media_type='image/png')
+    except Exception as e:
+        print(e)
+        raise HTTPException(status_code=500, detail="Internal Server Error")
+    finally:
+        db.close()
+@app.get("/grap_TOP10_IP_source_addresses_json", tags=["logs"])
+def grap_TOP10_IP_source_addresses_json():
+    db = SessionLocal()
+    try:
+        src_ip_data = db.query(ModsecLog1.remote_address).all()
+        
+        # Count occurrences of each IP
+        src_ip_counter = Counter([data.remote_address for data in src_ip_data])
+        top10_ips = src_ip_counter.most_common(10)
+
+        # Prepare the list of results
+        list_result = [{"ip": ip, "count": count} for ip, count in top10_ips]
+
+        # Return the list as JSON
+        return list_result
+
+    except Exception as e:
+        print(e)
+        raise HTTPException(status_code=500, detail="Internal Server Error")
+    finally:
+        db.close()
+
+@app.get("/graph-top20-rule-hit", tags=["logs"])
+def graph_top20_rule_hit():
+    db = SessionLocal()
+    try:
+        # Truy vấn cơ sở dữ liệu để lấy 20 luật được hit nhiều nhất và các trường liên quan
+        query = (
+            db.query(
+                ModsecLog1.message_rule_id,
+                ModsecLog1.message_msg.label('rule_msg'),
+                ModsecLog1.message_severity.label('rule_severity'),
+                ModsecLog1.message_rule_file.label('rule_file'),
+                func.count(ModsecLog1.id).label('count')
+            )
+            .group_by(
+                ModsecLog1.message_rule_id,
+                ModsecLog1.message_msg,
+                ModsecLog1.message_severity,
+                ModsecLog1.message_rule_file
+            )
+            .order_by(
+                func.count(ModsecLog1.id).desc()
+            )
+            .limit(20)
+        )
+
+        # Thực thi truy vấn và lấy kết quả
+        result = query.all()
+        list_result = []
+        for item in result:
+            # Rút gọn rule_msg nếu dài hơn 30 ký tự
+            rule_msg = item.rule_msg
+            if len(rule_msg) > 30:
+                rule_msg = rule_msg[:27] + '...'
+            # Đặt lại rule_msg nếu có điều kiện cụ thể
+            if rule_msg == '?' and item.message_rule_id == '-':
+                rule_msg = "Unknown rule"  # Sửa lại để phản ánh chuỗi bạn muốn sử dụng
+
+            list_result.append({
+                "rule_id": item.message_rule_id,
+                "rule_file": item.rule_file,
+                "count": item.count,
+                "rule_descr": f"id: {item.message_rule_id}, sev: {item.rule_severity}, msg: {rule_msg}"
+            })
+
+        # Trả về danh sách dưới dạng JSON
+        return list_result
+
+    except Exception as e:
+        print(e)
+        raise HTTPException(status_code=500, detail="Internal Server Error")
+    finally:
+        db.close()
+
+@app.get("/graph_TOP10_Attacks_intercepted", tags=["logs"])
+def graph_TOP10_Attacks_intercepted():
+    db = SessionLocal()
+    try:
+        # Query the database for the top 10 attacks intercepted grouped by action_message
+        top_attacks = (
+            db.query(
+                ModsecLog1.action_message,
+                func.count(ModsecLog1.id).label('count')
+            )
+            .group_by(ModsecLog1.action_message)
+            .order_by(func.count(ModsecLog1.id).desc())
+            .limit(10)
+            .all()
+        )
+
+        # Construct a list of dictionaries to be returned as JSON
+        top_attacks_list = [
+            {"action_message": attack.action_message, "count": attack.count}
+            for attack in top_attacks
+        ]
+
+        # Return the list as JSON
+        return top_attacks_list
+
+    except Exception as e:
+        print(e)
+        raise HTTPException(status_code=500, detail="Internal Server Error")
+    finally:
+        db.close()
+
+@app.get("/graph_Passed_and_Intercepted", tags=["logs"])
+def graph_Passed_and_Intercepted():
+    db = SessionLocal()
+    LOG_TIMESTAMP_FORMAT = '%d/%b/%Y:%H:%M:%S %z'               # e.g. "01/Mar/2018:05:26:41 +0100"
+    LOG_TIMESTAMP_FORMAT_TIMEMS = '%d/%b/%Y:%H:%M:%S.%f %z' 
+    OUTPUT_TIMESTAMP_FORMAT = '%H:%M:%S %d-%m-%Y'  
+    try:
+        logs_query = db.query(ModsecLog1.event_time, ModsecLog1.action).all()
+        # Create DataFrame from query results
+        events_df = pd.DataFrame(logs_query, columns=['event_time', 'action'])
+        # Function to parse timestamps
+        def parse_timestamp(time_str):
+            try:
+                return datetime.strptime(time_str, LOG_TIMESTAMP_FORMAT).replace(tzinfo=None)
+            except ValueError:
+                return datetime.strptime(time_str, LOG_TIMESTAMP_FORMAT_TIMEMS).replace(tzinfo=None)
+        def reformat_timestamp(dt):
+            return dt.strftime(OUTPUT_TIMESTAMP_FORMAT)
+        # Convert event_time strings to datetime objects
+        events_df['event_time'] = events_df['event_time'].apply(parse_timestamp)
+        # Assuming 'intercepted' represents 'Intercepted' and '-' represents 'Passed'
+        events_df['intercepted'] = events_df['action'] == 'intercepted'
+        events_df['passed'] = events_df['action'] == '-'
+        # Determine the period based on the event time range
+        event_time_min = events_df['event_time'].min()
+        event_time_max = events_df['event_time'].max()
+        event_time_range = event_time_max - event_time_min
+        event_time_range_minutes = int(event_time_range.total_seconds() / 60)
+
+        if event_time_range_minutes < 60:
+            periods = 'S'
+        else:
+            periods = str(int(event_time_range_minutes / 30)) + 'T'
+        # Group by determined period and calculate sum
+        grouped_df = events_df.resample(periods, on='event_time').sum()
+        grouped_df.index = grouped_df.index.map(reformat_timestamp)
+        # Convert DataFrame to dictionary for JSON response
+        passed_intercepted_dict = grouped_df[['passed', 'intercepted']].to_dict(orient='index')
+        # Return data as JSON
+        return passed_intercepted_dict
+
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
     finally:
         db.close()
 
