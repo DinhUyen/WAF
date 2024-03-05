@@ -25,6 +25,7 @@ from tempfile import NamedTemporaryFile
 import matplotlib.pyplot as plt
 from collections import Counter
 from fastapi.responses import FileResponse
+from fastapi import Query
 app = FastAPI()
 origins = ["*"]
 
@@ -450,14 +451,31 @@ def graph_TOP10_Attacks_intercepted():
         db.close()
 
 @app.get("/graph_Passed_and_Intercepted", tags=["logs"])
-def graph_Passed_and_Intercepted():
+def graph_Passed_and_Intercepted(
+        time_start: Optional[datetime] = Query(
+            None, 
+            title="Start Time", 
+            description="The start time for filtering logs, format: YYYY-MM-DDTHH:MM:SS", 
+            example="2024-02-24T09:00:00"
+        ), 
+        time_end: Optional[datetime] = Query(
+            None, 
+            title="End Time", 
+            description="The end time for filtering logs, format: YYYY-MM-DDTHH:MM:SS", 
+            example="2024-02-27T17:00:00"
+        )):
     db = SessionLocal()
-    LOG_TIMESTAMP_FORMAT = '%Y-%m-%d %H:%M:%S'              # e.g. "01/Mar/2018:05:26:41 +0100"
+    LOG_TIMESTAMP_FORMAT = '%Y-%m-%d %H:%M:%S'             
     LOG_TIMESTAMP_FORMAT_TIMEMS = '%d/%b/%Y:%H:%M:%S.%f %z' 
     OUTPUT_TIMESTAMP_FORMAT = '%H:%M:%S %d-%m-%Y'  
     try:
-        logs_query = db.query(ModsecLog1.event_time, ModsecLog1.action).all()
+        base_query  = db.query(ModsecLog1.event_time, ModsecLog1.action)
         # Create DataFrame from query results
+        if time_start and time_end:
+            base_query = base_query.filter(ModsecLog1.event_time.between(time_start, time_end))
+        if time_start:
+            base_query = base_query.filter(ModsecLog1.event_time >= time_start)
+        logs_query  = base_query.all()
         events_df = pd.DataFrame(logs_query, columns=['event_time', 'action'])
         # Function to parse timestamps
         def parse_timestamp(time_str):
