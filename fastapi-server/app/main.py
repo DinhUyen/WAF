@@ -164,39 +164,7 @@ def get_log(number: int = 10,page: int = 1,distinct:int=0 ,filters: str = None):
     finally:
         db.close()
 
-@app.get("/getCountLogWithinTime", tags=["logs"])
-def get_countLog_withintime():
-    # Tạo kết nối database
-    db = SessionLocal()
-    list_result = []
 
-    try:
-        current_time = datetime.now()
-        if current_time.minute > 0 or current_time.second > 0 or current_time.microsecond > 0:
-            current_time = current_time.replace(minute=0, second=0, microsecond=0) + timedelta(hours=1)
-        start_time = current_time - timedelta(days=1)
-        for i in range(8):
-            period_start = start_time + timedelta(hours=i*3)
-            period_end = start_time + timedelta(hours=(i+1)*3)
-
-            count = db.query(func.count(ModsecLog.id)).filter(
-                ModsecLog.time >= period_start,
-                ModsecLog.time < period_end
-            ).scalar()
-
-            # Thêm kết quả vào danh sách
-            list_result.append({
-                "time": f"{period_start.strftime('%H.%M')}-{period_end.strftime('%H.%M')}",
-                "number_of_prevented": count
-            })
-
-        return list_result
-
-    except Exception as e:
-        print(e)
-        raise HTTPException(status_code=500, detail="Internal Server Error")
-    finally:
-        db.close()
 @app.get("/getLogWithinTime", tags=["logs"])
 def get_log_within_time(
     time: int, number: int = 10, page: int = 1,
@@ -303,6 +271,39 @@ def get_detected_times(time:int):
         db.close()
 
 #Graph
+@app.get("/graph_count_log_within_12h", tags=["logs"])
+def graph_count_log_within_12h():
+    # Tạo kết nối database
+    db = SessionLocal()
+    list_result = []
+
+    try:
+        current_time = datetime.now()
+        if current_time.minute > 0 or current_time.second > 0 or current_time.microsecond > 0:
+            current_time = current_time.replace(minute=0, second=0, microsecond=0) + timedelta(hours=1)
+        start_time = current_time - timedelta(days=1)
+        for i in range(8):
+            period_start = start_time + timedelta(hours=i*3)
+            period_end = start_time + timedelta(hours=(i+1)*3)
+
+            count = db.query(func.count(ModsecLog.id)).filter(
+                ModsecLog.time >= period_start,
+                ModsecLog.time < period_end
+            ).scalar()
+
+            # Thêm kết quả vào danh sách
+            list_result.append({
+                "time": f"{period_start.strftime('%H.%M')}-{period_end.strftime('%H.%M')}",
+                "number_of_prevented": count
+            })
+
+        return list_result
+
+    except Exception as e:
+        print(e)
+        raise HTTPException(status_code=500, detail="Internal Server Error")
+    finally:
+        db.close()
 @app.get("/grap_TOP10_IP_source_addresses_png", tags=["logs"])
 def grap_TOP10_IP_source_addresses_png():
     db = SessionLocal()
@@ -451,7 +452,7 @@ def graph_TOP10_Attacks_intercepted():
 @app.get("/graph_Passed_and_Intercepted", tags=["logs"])
 def graph_Passed_and_Intercepted():
     db = SessionLocal()
-    LOG_TIMESTAMP_FORMAT = '%d/%b/%Y:%H:%M:%S %z'               # e.g. "01/Mar/2018:05:26:41 +0100"
+    LOG_TIMESTAMP_FORMAT = '%Y-%m-%d %H:%M:%S'              # e.g. "01/Mar/2018:05:26:41 +0100"
     LOG_TIMESTAMP_FORMAT_TIMEMS = '%d/%b/%Y:%H:%M:%S.%f %z' 
     OUTPUT_TIMESTAMP_FORMAT = '%H:%M:%S %d-%m-%Y'  
     try:
