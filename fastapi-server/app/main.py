@@ -45,18 +45,6 @@ engine = create_engine(SQLITE_DATABASE_URL,connect_args={"check_same_thread": Fa
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 
-class ModsecLog(Base):
-    __tablename__ = "modseclog"
-    id = Column(Integer, primary_key=True, index=True)
-    remote_address = Column(String)
-    remote_port = Column(String)
-    local_address = Column(String)
-    local_port = Column(String)
-    request = Column(String)
-    time = Column(String)
-    msg = Column(String)
-    message = Column(String)
-
 class ModsecHost(Base):
     __tablename__ = "modsechost"
     id = Column(Integer, primary_key=True, index=True, autoincrement=True)
@@ -128,44 +116,39 @@ def read_root():
         db.close()
 # LOG
 @app.get("/getlog", tags=["logs"])
-def get_log(number: int = 10,page: int = 1,distinct:int=0 ,filters: str = None):
-    # oreder by id desc , filter with message colume with no case sensitive, distinct by msg
+def get_log(number: int = 10, page: int = 1, distinct: int = 0, filters: str = None):
     db = SessionLocal()
-    print(f"number: {number}, page: {page}, distinct: {distinct}, filters: {filters}")
-
-    list_result = []
-    list_msg = []
     try:
-        query = db.query(ModsecLog)
-
+        query = db.query(ModsecLog1, ModsecHost.ServerName).join(
+            ModsecHost, ModsecHost.Port == ModsecLog1.local_port
+        )
         if filters:
-            query = query.filter(ModsecLog.message.ilike(f"%{filters}%"))
-
-        # if distinct == 1:
-        #     query = query.distinct(ModsecLog.msg)
-
-        log = query.order_by(ModsecLog.id.desc()).limit(number).offset((page - 1) * number).all()
-
-        for entry in log:
-            if distinct == 1 and entry.msg in list_msg:
-                continue
+            query = query.filter(ModsecLog1.message_msg.ilike(f"%{filters}%"))
+        if distinct == 1:
+            query = query.group_by(ModsecLog1.message_msg)
+        log_entries = query.order_by(ModsecLog1.id.desc()).limit(number).offset((page - 1) * number).all()
+        list_result = []
+        for entry in log_entries:
+            log, server_name = entry
+            action_value = "passed" if log.action == "-" else log.action
+            response_status_value = "403" if log.response_status == "-" else log.response_status
             list_result.append({
-                "id": entry.id,
-                "remote_address": entry.remote_address,
-                "remote_port": entry.remote_port,
-                "local_address": entry.local_address,
-                "local_port": entry.local_port,
-                "request": entry.request,
-                "time": entry.time,
-                "msg": entry.msg,
-                "message": entry.message
+                "id": log.id,
+                "transaction_id": log.transaction_id,
+                "event_time": log.event_time,
+                "remote_address": log.remote_address,
+                "local_port": log.local_port,
+                "server_name": server_name,
+                "request": log.request_line,
+                "response_status": response_status_value,
+                "action": action_value,
+                "message_msg": log.message_msg,
+                "message_rule_id": log.message_rule_id                
             })
-            list_msg.append(entry.msg)
-        del list_msg
         return list_result
     except Exception as e:
         print(e)
-        raise HTTPException(status_code=500, detail="Internal Server Error")
+        raise HTTPException(status_code=500, detail=str(e))
     finally:
         db.close()
 
@@ -213,39 +196,43 @@ def get_log_within_time(time: int, number: int = 10, page: int = 1,
     try:
         db = SessionLocal()
         print(f"time: {time}, number: {number}, page: {page}, src_ip: {src_ip}, dest_ip: {dest_ip}, filters: {filters}")
-
-        query = db.query(ModsecLog)
-
+        query = db.query(ModsecLog1, ModsecHost.ServerName).join(
+            ModsecHost, ModsecHost.Port == ModsecLog1.local_port
+        )
         # Apply time filter
         end_time = datetime.now()
         start_time = end_time - timedelta(hours=time)
-        query = query.filter(ModsecLog.time >= start_time, ModsecLog.time <= end_time)
+        query = query.filter(ModsecLog1.event_time >= start_time, ModsecLog1.event_time <= end_time)
 
         # Apply IP filters if provided
         if src_ip:
-            query = query.filter(ModsecLog.remote_address == src_ip)
+            query = query.filter(ModsecLog1.remote_address == src_ip)
         if dest_ip:
-            query = query.filter(ModsecLog.local_address == dest_ip)
+            query = query.filter(ModsecLog1.local_address == dest_ip)
         if filters:
-            query = query.filter(ModsecLog.message.ilike(f"%{filters}%"))
+            query = query.filter(ModsecLog1.message.ilike(f"%{filters}%"))
 
         total_records = query.count()  # Get the total records matching the filter before applying limit and offset
 
-        log = query.order_by(ModsecLog.id.desc()).limit(number).offset((page - 1) * number).all()
+        log_entries = query.order_by(ModsecLog1.id.desc()).limit(number).offset((page - 1) * number).all()
 
         list_result = []
-
-        for entry in log:
+        for entry in log_entries:
+            log, server_name = entry
+            action_value = "passed" if log.action == "-" else log.action
+            response_status_value = "403" if log.response_status == "-" else log.response_status
             list_result.append({
-                "id": entry.id,
-                "remote_address": entry.remote_address,
-                "remote_port": entry.remote_port,
-                "local_address": entry.local_address,
-                "local_port": entry.local_port,
-                "request": entry.request,
-                "time": entry.time,
-                "msg": entry.msg,
-                "message": entry.message
+                "id": log.id,
+                "transaction_id": log.transaction_id,
+                "event_time": log.event_time,
+                "remote_address": log.remote_address,
+                "local_port": log.local_port,
+                "server_name": server_name,
+                "request": log.request_line,
+                "response_status": response_status_value,
+                "action": action_value,
+                "message_msg": log.message_msg,
+                "message_rule_id": log.message_rule_id                
             })
         log_response = {
             "total": total_records,
@@ -316,14 +303,14 @@ def get_IP_attacker_within_time(time: int, number: int = 10, page: int = 1, dist
         db = SessionLocal()
         print(f"time: {time}, number: {number}, page: {page}, distinct: {distinct}, filters: {filters}")
 
-        query = db.query(ModsecLog.remote_address, func.count(ModsecLog.id)).\
-            filter(ModsecLog.time >= datetime.now() - timedelta(hours=time)).\
-            group_by(ModsecLog.remote_address).\
-            order_by(func.count(ModsecLog.id).desc()).\
+        query = db.query(ModsecLog1.remote_address, func.count(ModsecLog.id)).\
+            filter(ModsecLog1.event_time >= datetime.now() - timedelta(hours=time)).\
+            group_by(ModsecLog1.remote_address).\
+            order_by(func.count(ModsecLog1.id).desc()).\
             limit(number).offset((page - 1) * number)
 
         if filters:
-            query = query.filter(ModsecLog.message.ilike(f"%{filters}%"))
+            query = query.filter(ModsecLog1.message.ilike(f"%{filters}%"))
 
         results = query.all()
 
@@ -345,8 +332,8 @@ def get_detected_times(time:int):
         db = SessionLocal()
         print(f"time: {time}")
 
-        query = db.query(func.count(ModsecLog.id)).\
-            filter(ModsecLog.time >= datetime.now() - timedelta(hours=time))
+        query = db.query(func.count(ModsecLog1.id)).\
+            filter(ModsecLog1.event_time >= datetime.now() - timedelta(hours=time))
         result = query.scalar()
 
         return {"detected_times": result}
