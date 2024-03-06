@@ -10,6 +10,8 @@ import subprocess
 from fastapi.middleware.cors import CORSMiddleware
 import uvicorn
 import pandas as pd
+from io import BytesIO
+from fastapi.responses import StreamingResponse
 from sqlalchemy import create_engine, Column, Integer, String
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
@@ -26,6 +28,7 @@ import matplotlib.pyplot as plt
 from collections import Counter
 from fastapi.responses import FileResponse
 from fastapi import Query
+from sqlalchemy.exc import SQLAlchemyError
 app = FastAPI()
 origins = ["*"]
 
@@ -92,6 +95,7 @@ class ModsecLog1(Base):
     transaction_id = Column(String)
     event_time = Column(String)
     remote_address = Column(String) 
+    remote_port = Column(String) 
     request_host = Column(String)
     local_port = Column(String)
     request_useragent = Column(String)
@@ -165,12 +169,47 @@ def get_log(number: int = 10,page: int = 1,distinct:int=0 ,filters: str = None):
     finally:
         db.close()
 
+@app.get("/get_log_xlsx", tags=["logs"])
+def get_log_xlsx():
+    db = SessionLocal()
+    try:
+        query = db.query(ModsecLog1)
+        log = query.all()
+        list_result = []
+        for entry in log:
+            list_result.append(entry.__dict__)
+        
+        # Convert to a Pandas DataFrame
+        df = pd.DataFrame(list_result)
+        
+        # Remove metadata from the SQLAlchemy results
+        df = df.drop('_sa_instance_state', axis=1)
+        
+        # Convert the DataFrame into an Excel file in memory
+        excel_file = BytesIO()
+        with pd.ExcelWriter(excel_file, engine='openpyxl') as writer:
+            df.to_excel(writer, index=False, sheet_name='ModsecLog1 Data')
+        
+        # Reset file pointer
+        excel_file.seek(0)
+        
+        # Create a filename with the current timestamp
+        file_name = f"modseclog_{datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}.xlsx"
+        
+        # Create a StreamingResponse to send the data back to the client
+        response = StreamingResponse(excel_file, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+        response.headers["Content-Disposition"] = f"attachment; filename={file_name}"
+        return response
+
+    except Exception as e:
+        print(e)
+        raise HTTPException(status_code=500, detail="Internal Server Error")
+    finally:
+        db.close()
 
 @app.get("/getLogWithinTime", tags=["logs"])
-def get_log_within_time(
-    time: int, number: int = 10, page: int = 1,
-    src_ip: str = None, dest_ip: str = None, filters: str = None
-):
+def get_log_within_time(time: int, number: int = 10, page: int = 1,
+    src_ip: str = None, dest_ip: str = None, filters: str = None):
     try:
         db = SessionLocal()
         print(f"time: {time}, number: {number}, page: {page}, src_ip: {src_ip}, dest_ip: {dest_ip}, filters: {filters}")
@@ -223,6 +262,53 @@ def get_log_within_time(
         raise HTTPException(status_code=500, detail="Internal Server Error")
     finally:
         db.close()
+
+
+@app.get("/get_log_within_time_xlsx", tags=["logs"])
+def get_log_within_time_xlsx(
+    time: int, src_ip: str = None, dest_ip: str = None, filters: str = None):
+    db = SessionLocal()
+    try:
+        query = db.query(ModsecLog1)
+        end_time = datetime.now()
+        start_time = end_time - timedelta(hours=time)
+        query = query.filter(ModsecLog1.event_time >= start_time, ModsecLog1.event_time <= end_time)
+        if src_ip:
+            query = query.filter(ModsecLog1.remote_address == src_ip)
+        if dest_ip:
+            query = query.filter(ModsecLog1.local_address == dest_ip)
+        if filters:
+            query = query.filter(ModsecLog1.message.ilike(f"%{filters}%"))
+        logs = query.order_by(ModsecLog1.id.desc()).all()
+        
+        # Create a list of dictionaries, excluding the '_sa_instance_state'
+        list_result = [{column.name: getattr(entry, column.name) for column in ModsecLog1.__table__.columns} for entry in logs]
+        
+        # Convert to a Pandas DataFrame
+        df = pd.DataFrame(list_result)
+        
+        # Convert the DataFrame into an Excel file in memory
+        excel_file = BytesIO()
+        with pd.ExcelWriter(excel_file, engine='openpyxl') as writer:
+            df.to_excel(writer, index=False, sheet_name='ModsecLog Data')
+        
+        # Reset file pointer
+        excel_file.seek(0)
+        
+        # Create a filename with the current timestamp
+        file_name = f"modseclog_{datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}-{time}hours.xlsx"
+        
+        # Create a StreamingResponse to send the data back to the client
+        response = StreamingResponse(excel_file, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+        response.headers["Content-Disposition"] = f"attachment; filename={file_name}"
+        return response
+
+    except Exception as e:
+        print(e)
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        db.close()
+
 #get IP of attacker within time
 @app.get("/getIPattackerWithinTime", tags=["logs"])
 def get_IP_attacker_within_time(time: int, number: int = 10, page: int = 1, distinct: int = 0, filters: str = None):
@@ -807,13 +893,21 @@ def delete_agent(host_id: int):
         return any(line.strip() == listen_line for line in file_content)
     try:
         # Fetch the host from the database
-        db_host = db.query(ModsecHost).filter(ModsecHost.id == host_id).first()
-        if db_host is None:
-            raise HTTPException(status_code=404, detail="Host not found")
+        try:
+        # Fetch the host from the database
+            db_host = db.query(ModsecHost).filter(ModsecHost.id == host_id).first()
+            if db_host is None:
+                raise HTTPException(status_code=404, detail="Host not found")
 
         # Delete the host from the database
-        db.delete(db_host)
-        db.commit()
+            db.delete(db_host)
+            db.commit()
+
+        except SQLAlchemyError as db_error:
+            db.rollback()
+            raise HTTPException(status_code=500, detail=f"Database error: {db_error}")
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=str(e))
         # Close port
         config_file_apache = '/etc/apache2/apache2.conf'
         with open(config_file_apache, 'r') as file:
@@ -826,11 +920,14 @@ def delete_agent(host_id: int):
             subprocess.run(['sudo', 'service', 'apache2', 'reload'], check=True)
 
         # Delete the Apache configuration file
-        config_file_path = f'/etc/apache2/sites-available/{db_host.ServerName}.conf'
-        try:
-            subprocess.run(['sudo', 'rm', config_file_path], check=True)
-        except subprocess.CalledProcessError as e:
-            raise HTTPException(status_code=500, detail=f"Failed to delete Apache configuration file: {e}")
+        config_file_path = Path(f'/etc/apache2/sites-available/{db_host.ServerName}.conf')
+        if config_file_path.exists():            
+            try:
+                subprocess.run(['sudo', 'rm', config_file_path], check=True)
+            except subprocess.CalledProcessError as e:
+                raise HTTPException(status_code=500, detail=f"Failed to delete Apache configuration file: {e}")
+        else:
+            pass
 
         # Remove the symbolic link
         symbolic_link = Path(f'/etc/apache2/sites-enabled/{db_host.ServerName}.conf')

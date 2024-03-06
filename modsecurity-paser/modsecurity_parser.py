@@ -351,7 +351,7 @@ def modsec_save_xlsx(modsec_dict, output_xlsx_filename, output_with_graphs):
     Returns:
         _type_: _description_
     """
-    modsec_header_xlsx = ['transaction_id', 'event_time', 'remote_address', 'request_host',
+    modsec_header_xlsx = ['id', 'transaction_id', 'event_time', 'remote_address', 'request_host',
                           'request_useragent', 'request_line', 'request_line_method', 'request_line_url',
                           'request_line_protocol', 'response_protocol', 'response_status',
                           'action', 'action_phase', 'action_message',
