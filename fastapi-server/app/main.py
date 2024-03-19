@@ -10,6 +10,7 @@ import subprocess
 from fastapi.middleware.cors import CORSMiddleware
 import uvicorn
 import pandas as pd
+import re
 from io import BytesIO
 from fastapi.responses import StreamingResponse
 from sqlalchemy import create_engine, Column, Integer, String
@@ -21,7 +22,6 @@ from sqlalchemy import or_
 from ruleEngine import update_modsecurity_config
 from ruleEngine import restart_apache
 from ruleEngine import add_new_vhost_entry
-from convertTime import convert_to_datetime
 from pathlib import Path
 from tempfile import NamedTemporaryFile
 import matplotlib.pyplot as plt
@@ -29,6 +29,8 @@ from collections import Counter
 from fastapi.responses import FileResponse
 from fastapi import Query
 from sqlalchemy.exc import SQLAlchemyError
+from geoip2.database import Reader
+from geoip2.errors import AddressNotFoundError
 app = FastAPI()
 origins = ["*"]
 
@@ -303,7 +305,7 @@ def get_IP_attacker_within_time(time: int, number: int = 10, page: int = 1, dist
         db = SessionLocal()
         print(f"time: {time}, number: {number}, page: {page}, distinct: {distinct}, filters: {filters}")
 
-        query = db.query(ModsecLog1.remote_address, func.count(ModsecLog.id)).\
+        query = db.query(ModsecLog1.remote_address, func.count(ModsecLog1.id)).\
             filter(ModsecLog1.event_time >= datetime.now() - timedelta(hours=time)).\
             group_by(ModsecLog1.remote_address).\
             order_by(func.count(ModsecLog1.id).desc()).\
@@ -325,6 +327,33 @@ def get_IP_attacker_within_time(time: int, number: int = 10, page: int = 1, dist
     finally:
         db.close()
 
+@app.get("/get_Attacks_Map", tags=["logs"])
+def get_Attacks_Map():
+    db = SessionLocal()
+    geoip_reader = Reader('/home/kali/Desktop/WAF/db/GeoLite2-City.mmdb')    
+    try:
+        recent_attacks = db.query(ModsecLog1.remote_address).distinct().limit(10).all()
+        print("recent_attacks: ", recent_attacks)
+        attacks_info = []
+        for attack in recent_attacks:
+            ip = attack.remote_address
+            try:
+                response = geoip_reader.city(ip)
+                attacks_info.append({
+                    "ip": ip,
+                    "latitude": response.location.latitude,
+                    "longitude": response.location.longitude,
+                    "city": response.city.name,
+                    "country": response.country.name
+                })
+            except AddressNotFoundError:
+                # Xử lý trường hợp IP không tìm thấy vị trí
+                print(f"Location not found for IP: {ip}")
+    except Exception as e:
+        print(e)
+        raise HTTPException(status_code=500, detail="Internal Server Error")
+    finally:
+        db.close()
 # get the number of times d in a period
 @app.get("/getDetectedTimes", tags=["logs"])
 def get_detected_times(time:int):
@@ -345,8 +374,8 @@ def get_detected_times(time:int):
         db.close()
 
 #Graph
-@app.get("/graph_count_log_within_12h", tags=["logs"])
-def graph_count_log_within_12h():
+@app.get("/graph_count_log_within_24h", tags=["logs"])
+def graph_count_log_within_24h():
     # Tạo kết nối database
     db = SessionLocal()
     list_result = []
@@ -360,9 +389,9 @@ def graph_count_log_within_12h():
             period_start = start_time + timedelta(hours=i*3)
             period_end = start_time + timedelta(hours=(i+1)*3)
 
-            count = db.query(func.count(ModsecLog.id)).filter(
-                ModsecLog.time >= period_start,
-                ModsecLog.time < period_end
+            count = db.query(func.count(ModsecLog1.id)).filter(
+                ModsecLog1.event_time >= period_start,
+                ModsecLog1.event_time < period_end
             ).scalar()
 
             # Thêm kết quả vào danh sách
@@ -588,16 +617,49 @@ def graph_Passed_and_Intercepted(
         db.close()
 
 #RULE        
-@app.post("/update_RuleEngine_modsecconfig", tags=["rules"])
-def update_modsecurity(port: int, mode: str):
-    config_file_path = '/etc/apache2/sites-available/www.dvwa.com.conf'
 
+@app.post("/update_mode_agent", tags=["rules"])
+def update_mode_agent(ServerName: str, mode: str):
+    config_file_path = f'/etc/apache2/sites-available/{ServerName}.conf'
+
+    if mode not in ['On', 'Off', 'DetectionOnly']:
+        raise HTTPException(status_code=400, detail="Invalid mode. Allowed values are On, Off, DetectionOnly.")
     try:
-        update_modsecurity_config(config_file_path, port, mode)
+        with open(config_file_path, 'r') as file:
+            config_content = file.readlines()
+        for i, line in enumerate(config_content):
+            if 'SecRuleEngine' in line:
+                config_content[i] = re.sub(r'SecRuleEngine\s+\w+', f'SecRuleEngine {mode}', line)
+                break
+        with open(config_file_path, 'w') as file:
+            file.writelines(config_content)
+        try:
+            subprocess.run(['sudo', 'systemctl', 'reload', 'apache2'], check=True)
+        except subprocess.CalledProcessError as e:
+            print(f"Error restarting Apache: {e}")
         return {"message": "ModSecurity configuration updated successfully."}
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to update ModSecurity configuration: {str(e)}")           
+        raise HTTPException(status_code=500, detail=f"Failed to update ModSecurity configuration: {str(e)}")        
 
+@app.get("/get_rule", tags=["rules"])
+def get_rule_custom(ServerName: str):
+    rule_file_path = f'/etc/modsecurity/custom_rules/{ServerName}_rules.conf'
+    try:
+        with open(rule_file_path, 'r') as file:
+                content = file.read()
+                return content
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to read ModSecurity rule file.")
+#update rule custom
+@app.post("/updaterule", tags=["rules"])
+def update_rule_custom(rule_content: str, ServerName: str):
+    rule_file_path = f'/etc/modsecurity/custom_rules/{ServerName}_rules.conf'
+    try:
+        with open(rule_file_path, 'w') as file:
+            file.write(rule_content)
+            return {"message": f"Rule custom {ServerName} updated successfully."}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to update ModSecurity rule file.")
 
 #AGENT
 @app.get("/getagent", tags=["agents"])
