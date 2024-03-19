@@ -52,6 +52,10 @@ def add_new_vhost_entry(port, servername, ProxyPreserveHost, ProxyPass, ProxyPas
 
     ErrorLog {ErrorLog}
     ErrorDocument {ErrorDocument}
+    <IfModule mod_security2.c>
+        SecRuleEngine DetectionOnly
+        Include /etc/modsecurity/custom_rules/{servername}_rules.conf
+    </IfModule>
 </VirtualHost>
 """
         else:  # Default to HTTP if not HTTPS
@@ -66,7 +70,7 @@ def add_new_vhost_entry(port, servername, ProxyPreserveHost, ProxyPass, ProxyPas
     ErrorDocument {ErrorDocument}
     <IfModule mod_security2.c>
         SecRuleEngine DetectionOnly
-        # More ModSecurity configurations if needed
+        Include /etc/modsecurity/custom_rules/{servername}_rules.conf
     </IfModule>
 </VirtualHost>
 """
