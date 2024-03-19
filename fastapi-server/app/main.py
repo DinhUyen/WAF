@@ -11,6 +11,7 @@ from fastapi.middleware.cors import CORSMiddleware
 import uvicorn
 import pandas as pd
 import re
+import os
 from io import BytesIO
 from fastapi.responses import StreamingResponse
 from sqlalchemy import create_engine, Column, Integer, String
@@ -31,6 +32,7 @@ from fastapi import Query
 from sqlalchemy.exc import SQLAlchemyError
 from geoip2.database import Reader
 from geoip2.errors import AddressNotFoundError
+from starlette.responses import Response
 app = FastAPI()
 origins = ["*"]
 
@@ -68,14 +70,12 @@ class HostAdd(BaseModel):
     ProxyPreserveHost: str
     ProxyPass: str
     ProxyPassReverse: str
-    ErrorLog: str
     ErrorDocument: str
     Protocol: str
 class HostUpdate(BaseModel):
     ProxyPreserveHost: Optional[str] = Field(default="")
     ProxyPass: Optional[str] = Field(default="")
     ProxyPassReverse: Optional[str] = Field(default="")
-    ErrorLog: Optional[str] = Field(default="")
     ErrorDocument: Optional[str] = Field(default="")
     Protocol: Optional[str] = Field(default="")
 
@@ -107,7 +107,8 @@ class ModsecLog1(Base):
     message_accuracy = Column(String)
     message_maturity = Column(String)
     full_message_line = Column(String)
-
+class RuleContent(BaseModel):
+    rule_content: str
 @app.get("/")
 def read_root():
     print("Hello world")
@@ -646,20 +647,32 @@ def get_rule_custom(ServerName: str):
     rule_file_path = f'/etc/modsecurity/custom_rules/{ServerName}_rules.conf'
     try:
         with open(rule_file_path, 'r') as file:
-                content = file.read()
-                return content
+            content = file.read()
+            # Trả về nội dung dưới dạng Response với media_type là text/plain
+            return Response(content=content, media_type="text/plain")
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to read ModSecurity rule file.")
+        raise HTTPException(status_code=500, detail=f"Failed to read ModSecurity rule file: {e}")
 #update rule custom
 @app.post("/updaterule", tags=["rules"])
-def update_rule_custom(rule_content: str, ServerName: str):
+async def update_rule_custom(request: Request, ServerName: str):
     rule_file_path = f'/etc/modsecurity/custom_rules/{ServerName}_rules.conf'
     try:
+        # Nhận raw body từ request
+        body = await request.body()
+        # Decode body (assumed to be utf-8 encoded)
+        rule_content = body.decode('utf-8')
+
+        # Mở file với mode 'w' và ghi nội dung rule_content vào đó
         with open(rule_file_path, 'w') as file:
             file.write(rule_content)
-            return {"message": f"Rule custom {ServerName} updated successfully."}
+        
+        # Sử dụng subprocess để reload Apache
+        subprocess.run(["sudo", "systemctl", "reload", "apache2"], check=True)
+        return {"message": f"Rule for {ServerName} updated and Apache reloaded successfully."}
+    except subprocess.CalledProcessError as e:
+        raise HTTPException(status_code=500, detail=f"Failed to reload Apache: {e}")
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to update ModSecurity rule file.")
+        raise HTTPException(status_code=500, detail=f"Failed to update ModSecurity rule file: {e}")
 
 #AGENT
 @app.get("/getagent", tags=["agents"])
@@ -750,6 +763,17 @@ def get_agent_by_id(host_id: int):
 def add_agent(agent: HostAdd):
     config_file_path = f'/etc/apache2/sites-available/{agent.ServerName}.conf'
     config_file_apache = '/etc/apache2/apache2.conf'
+    rule_path = f'/etc/modsecurity/custom_rules/{agent.ServerName}_rules.conf'
+    error_path = f'/var/log/apache2/{agent.ServerName}_error.log'
+    #create rule_path use os
+    if not os.path.exists(rule_path):
+        with open(rule_path, 'w') as file:
+            pass
+    #create error_path
+    if not os.path.exists(error_path):
+        with open(error_path, 'w') as file:
+            pass
+    
     def check_port_in_apache_conf(port, file_content):
         listen_line = f"Listen {port}"
         return any(line.strip() == listen_line for line in file_content)
@@ -780,7 +804,7 @@ def add_agent(agent: HostAdd):
         if check_vhost_exists(agent.Port, agent.ServerName):
             raise HTTPException(status_code=400, detail="VirtualHost with this port and ServerName already exists.")
         
-        new_vhost = add_new_vhost_entry(agent.Port, agent.ServerName, agent.ProxyPreserveHost, f'/ {agent.ProxyPass}', f'/ {agent.ProxyPassReverse}', agent.ErrorLog, f'403 {agent.ErrorDocument}', agent.Protocol)
+        new_vhost = add_new_vhost_entry(agent.Port, agent.ServerName, agent.ProxyPreserveHost, f'/ {agent.ProxyPass}/', f'/ {agent.ProxyPassReverse}/', error_path, f'403 {agent.ErrorDocument}', agent.Protocol)
         with open(config_file_path, 'a') as file:
             file.write(new_vhost)
         symlink_command = [
@@ -801,7 +825,7 @@ def add_agent(agent: HostAdd):
             ProxyPreserveHost=agent.ProxyPreserveHost,
             ProxyPass=agent.ProxyPass, 
             ProxyPassReverse=agent.ProxyPassReverse,
-            ErrorLog=agent.ErrorLog,
+            ErrorLog= error_path,
             ErrorDocument= agent.ErrorDocument,
             Protocol=agent.Protocol,
             SSLCertificateFile = "/home/kali/Desktop/localhost.crt" if agent.Protocol == 'https' else None,  # Only for HTTPS
@@ -915,8 +939,6 @@ def update_agent(host_id: int, host_update: HostUpdate):
                     vhost_content[i] = f"    ProxyPass / {host_update.ProxyPass}\n"
                 elif line.strip().startswith("ProxyPassReverse ") and host_update.ProxyPassReverse:
                     vhost_content[i] = f"    ProxyPassReverse / {host_update.ProxyPassReverse}\n"
-                elif line.strip().startswith("ErrorLog ") and host_update.ErrorLog:
-                    vhost_content[i] = f"    ErrorLog {host_update.ErrorLog}\n"
                 elif line.strip().startswith("ErrorDocument") and host_update.ErrorDocument:
                     vhost_content[i] = f"    ErrorDocument 403 {host_update.ErrorDocument}\n"
             elif vhost_started and "</VirtualHost>" in line.strip():
@@ -958,7 +980,10 @@ def delete_agent(host_id: int):
         except Exception as e:
             raise HTTPException(status_code=500, detail=str(e))
         # Close port
+        config_file_path = Path(f'/etc/apache2/sites-available/{db_host.ServerName}.conf')
         config_file_apache = '/etc/apache2/apache2.conf'
+        rule_path = f'/etc/modsecurity/custom_rules/{db_host.ServerName}_rules.conf'
+        error_path = f'/var/log/apache2/{db_host.ServerName}_error.log'
         with open(config_file_apache, 'r') as file:
             apache_content = file.readlines()
         if check_port_in_apache_conf(db_host.Port, apache_content):
@@ -969,7 +994,6 @@ def delete_agent(host_id: int):
             subprocess.run(['sudo', 'service', 'apache2', 'reload'], check=True)
 
         # Delete the Apache configuration file
-        config_file_path = Path(f'/etc/apache2/sites-available/{db_host.ServerName}.conf')
         if config_file_path.exists():            
             try:
                 subprocess.run(['sudo', 'rm', config_file_path], check=True)
@@ -988,6 +1012,12 @@ def delete_agent(host_id: int):
         else:
             pass
         restart_apache()
+        #Delete rule path if exits
+        if os.path.exists(rule_path):
+            os.remove(rule_path)
+        #Delete error path if exits
+        if os.path.exists(error_path):
+            os.remove(error_path)
 
         return {"message": "Host deleted successfully."}
     except Exception as e:
