@@ -618,6 +618,31 @@ def graph_Passed_and_Intercepted(
         db.close()
 
 #RULE        
+@app.post("/update_mode_modsecurity", tags=["rules"])
+def update_mode_modsecurity(mode:str):
+    config_modsecurity_path = "/etc/modsecurity/modsecurity.conf"
+    
+    if mode not in ['On', 'Off', 'DetectionOnly']:
+        return "Invalid mode. Valid options are: On, Off, DetectionOnly", 400
+    
+    try:
+        with open(config_modsecurity_path, 'r+') as file:
+            config_contents = file.read()
+            config_contents = re.sub(
+                r'(SecRuleEngine\s+)(On|Off|DetectionOnly)', 
+                r'\g<1>' + mode, 
+                config_contents
+            )
+            file.seek(0)
+            file.write(config_contents)
+            file.truncate() 
+        try:
+            subprocess.run(['sudo', 'systemctl', 'reload', 'apache2'], check=True)
+        except subprocess.CalledProcessError as e:
+            print(f"Error restarting Apache: {e}")    
+        return "ModSecurity mode updated successfully.", 200
+    except IOError as e:
+        return f"An error occurred: {e}", 500
 
 @app.post("/update_mode_agent", tags=["rules"])
 def update_mode_agent(ServerName: str, mode: str):
@@ -642,6 +667,37 @@ def update_mode_agent(ServerName: str, mode: str):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to update ModSecurity configuration: {str(e)}")        
 
+@app.post("/update_mode_AI", tags=["rules"])
+def update_mode_AI(mode: str):
+    security_conf_path = "/etc/apache2/mods-enabled/security2.conf"
+    if mode not in ['On', 'Off']:
+        raise HTTPException(status_code=400, detail="Invalid mode value")
+    try:
+        with open(security_conf_path, 'r') as file:
+            lines = file.readlines()
+    except IOError:
+        raise HTTPException(status_code=500, detail="Could not read security2.conf file")
+    new_lines = []
+    for line in lines:
+        if 'IncludeOptional /etc/modsecurity/rules/*.conf' in line:
+            if mode == 'On':
+                new_line = line.lstrip('#').replace('\n', '') + '\n'
+            elif mode == 'Off':
+                new_line = f'#{line}' if not line.startswith('#') else line
+            new_lines.append(new_line)
+        else:
+            new_lines.append(line)
+    try:
+        with open(security_conf_path, 'w') as file:
+            file.writelines(new_lines)
+    except IOError:
+        raise HTTPException(status_code=500, detail="Could not write to security2.conf file")
+    try:
+        subprocess.run(['sudo', 'systemctl', 'reload', 'apache2'], check=True)
+    except subprocess.CalledProcessError as e:
+        print(f"Error restarting Apache: {e}")
+
+    return {"detail": "Security2 configuration updated and Apache reloaded successfully"}
 @app.get("/get_rule", tags=["rules"])
 def get_rule_custom(ServerName: str):
     rule_file_path = f'/etc/modsecurity/custom_rules/{ServerName}_rules.conf'
