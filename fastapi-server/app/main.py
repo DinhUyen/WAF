@@ -59,11 +59,13 @@ class ModsecHost(Base):
     ProxyPassReverse = Column(String)
     ErrorLog = Column(String)
     ErrorDocument = Column(String)
-    Protocol = Column(String)  # This will store either 'http' or 'https'
+    Protocol = Column(String) # This will store either 'http' or 'https'
+    SecRuleEngine = Column(String) 
     SSLCertificateFile = Column(String, nullable=True)  # Only for HTTPS
     SSLCertificateKeyFile = Column(String, nullable=True)  # Only for HTTPS
     SSLEngine = Column(String, nullable=True)  # Only for HTTPS
     SSLProxyEngine = Column(String, nullable=True)  # Only for HTTPS
+    
 class HostAdd(BaseModel):
     Port: int
     ServerName: str
@@ -617,37 +619,41 @@ def graph_Passed_and_Intercepted(
     finally:
         db.close()
 
-#RULE        
-@app.post("/update_mode_modsecurity", tags=["rules"])
-def update_mode_modsecurity(mode:str):
+#RULE  
+@app.get("/get_config", tags=["rules"])
+def get_config_modsecurity():
     config_modsecurity_path = "/etc/modsecurity/modsecurity.conf"
-    
-    if mode not in ['On', 'Off', 'DetectionOnly']:
-        return "Invalid mode. Valid options are: On, Off, DetectionOnly", 400
-    
     try:
-        with open(config_modsecurity_path, 'r+') as file:
-            config_contents = file.read()
-            config_contents = re.sub(
-                r'(SecRuleEngine\s+)(On|Off|DetectionOnly)', 
-                r'\g<1>' + mode, 
-                config_contents
-            )
-            file.seek(0)
-            file.write(config_contents)
-            file.truncate() 
-        try:
-            subprocess.run(['sudo', 'systemctl', 'reload', 'apache2'], check=True)
-        except subprocess.CalledProcessError as e:
-            print(f"Error restarting Apache: {e}")    
-        return "ModSecurity mode updated successfully.", 200
-    except IOError as e:
-        return f"An error occurred: {e}", 500
+        with open(config_modsecurity_path, 'r') as file:
+            content = file.read()
+            # Trả về nội dung dưới dạng Response với media_type là text/plain
+            return Response(content=content, media_type="text/plain")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to read ModSecurity rule file: {e}")      
+
+class Config(BaseModel):
+    config_content: str
+@app.post("/update_config", tags=["rules"])
+async def update_config_modsecurity(config_content: Config):
+
+    config_modsecurity_path = "/etc/modsecurity/modsecurity.conf"
+    content = config_content.config_content
+    try:
+        # Mở file với mode 'w' và ghi nội dung rule_content vào đó
+        with open(config_modsecurity_path, 'w') as f:   
+            f.write(content)
+        # Sử dụng subprocess để reload Apache
+        subprocess.run(["sudo", "systemctl", "reload", "apache2"], check=True)
+        return {"message": "Config Modsecurity updated and Apache reloaded successfully."}
+    except subprocess.CalledProcessError as e:
+        raise HTTPException(status_code=500, detail=f"Failed to reload Apache: {e}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to update ModSecurity config file: {e}")
 
 @app.post("/update_mode_agent", tags=["rules"])
 def update_mode_agent(ServerName: str, mode: str):
+    db = SessionLocal()
     config_file_path = f'/etc/apache2/sites-available/{ServerName}.conf'
-
     if mode not in ['On', 'Off', 'DetectionOnly']:
         raise HTTPException(status_code=400, detail="Invalid mode. Allowed values are On, Off, DetectionOnly.")
     try:
@@ -663,6 +669,10 @@ def update_mode_agent(ServerName: str, mode: str):
             subprocess.run(['sudo', 'systemctl', 'reload', 'apache2'], check=True)
         except subprocess.CalledProcessError as e:
             print(f"Error restarting Apache: {e}")
+        modsec_host = db.query(ModsecHost).filter(ModsecHost.ServerName == ServerName).first()
+        if modsec_host is not None:
+            modsec_host.SecRuleEngine = mode  
+            db.commit()
         return {"message": "ModSecurity configuration updated successfully."}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to update ModSecurity configuration: {str(e)}")        
@@ -698,6 +708,7 @@ def update_mode_AI(mode: str):
         print(f"Error restarting Apache: {e}")
 
     return {"detail": "Security2 configuration updated and Apache reloaded successfully"}
+
 @app.get("/get_rule", tags=["rules"])
 def get_rule_custom(ServerName: str):
     rule_file_path = f'/etc/modsecurity/custom_rules/{ServerName}_rules.conf'
@@ -709,27 +720,59 @@ def get_rule_custom(ServerName: str):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to read ModSecurity rule file: {e}")
 #update rule custom
+class RuleModel(BaseModel):
+    ServerName: str
+    rules: str
 @app.post("/updaterule", tags=["rules"])
-async def update_rule_custom(request: Request, ServerName: str):
-    rule_file_path = f'/etc/modsecurity/custom_rules/{ServerName}_rules.conf'
-    try:
-        # Nhận raw body từ request
-        body = await request.body()
-        # Decode body (assumed to be utf-8 encoded)
-        rule_content = body.decode('utf-8')
+async def update_rule_custom(ruleModel: RuleModel):
 
+    rule_file_path = f'/etc/modsecurity/custom_rules/{ruleModel.ServerName}_rules.conf'
+    rules = ruleModel.rules
+    
+    try:
         # Mở file với mode 'w' và ghi nội dung rule_content vào đó
-        with open(rule_file_path, 'w') as file:
-            file.write(rule_content)
-        
+        with open(rule_file_path, 'w') as f:   
+            f.write(rules)
         # Sử dụng subprocess để reload Apache
         subprocess.run(["sudo", "systemctl", "reload", "apache2"], check=True)
-        return {"message": f"Rule for {ServerName} updated and Apache reloaded successfully."}
+        return {"message": f"Rule for {ruleModel.ServerName} updated and Apache reloaded successfully."}
     except subprocess.CalledProcessError as e:
         raise HTTPException(status_code=500, detail=f"Failed to reload Apache: {e}")
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to update ModSecurity rule file: {e}")
 
+@app.get("/update_crs", tags=["rules"])
+async def update_crs():
+    try:
+        crs_directory = "/usr/share/modsecurity-crs/CRS"
+        if os.path.exists(crs_directory):
+            subprocess.check_call(['sudo', 'rm', '-rf', crs_directory])
+        subprocess.check_call(['sudo', 'git', 'clone', 'https://github.com/coreruleset/coreruleset.git', crs_directory])
+        
+        # Đổi tên file cấu hình mẫu
+        example_conf = os.path.join(crs_directory, 'crs-setup.conf.example')
+        conf = os.path.join(crs_directory, 'crs-setup.conf')
+        if os.path.exists(example_conf):
+            subprocess.check_call(['sudo', 'mv', example_conf, conf])
+        result = subprocess.check_output(
+            ['sudo', 'apache2ctl', 'configtest'],
+            stderr=subprocess.STDOUT  # Redirect stderr to stdout
+        )
+        decoded_result = result.decode('utf-8') if isinstance(result, bytes) else result
+        print(decoded_result)
+        print("decoded")
+        print(result)
+        if 'Syntax OK' in decoded_result:
+            print("Apache config syntax is OK.")
+        else:
+            print("failed")
+            raise Exception('Apache config syntax has errors.')
+        subprocess.check_call(['sudo', 'systemctl', 'reload', 'apache2'])
+        
+        return {"status": "success", "message": "CRS updated and applied successfully."}
+    except Exception as e:
+        # Trả về thông báo lỗi nếu có
+        raise HTTPException(status_code=500, detail=str(e))
 #AGENT
 @app.get("/getagent", tags=["agents"])
 def get_agent(number: int = 10, page: int = 1, distinct: int = 0, filters: Optional[str] = None):
@@ -760,6 +803,7 @@ def get_agent(number: int = 10, page: int = 1, distinct: int = 0, filters: Optio
                 "ErrorLog": agent.ErrorLog,
                 "ErrorDocument": agent.ErrorDocument,
                 "Protocol": agent.Protocol,
+                "SecRuleEngine": agent.SecRuleEngine,
                 "SSLCertificateFile": agent.SSLCertificateFile,
                 "SSLCertificateKeyFile": agent.SSLCertificateKeyFile,
                 "SSLEngine": agent.SSLEngine,
@@ -794,6 +838,7 @@ def get_agent_by_id(host_id: int):
                 "ErrorLog": agent.ErrorLog,
                 "ErrorDocument": agent.ErrorDocument,
                 "Protocol": agent.Protocol,
+                "SecRuleEngine": agent.SecRuleEngine,
                 "SSLCertificateFile": agent.SSLCertificateFile,
                 "SSLCertificateKeyFile": agent.SSLCertificateKeyFile,
                 "SSLEngine": agent.SSLEngine,
@@ -809,7 +854,8 @@ def get_agent_by_id(host_id: int):
                 "ProxyPassReverse": agent.ProxyPassReverse,
                 "ErrorLog": agent.ErrorLog,
                 "ErrorDocument": agent.ErrorDocument,
-                "Protocol": agent.Protocol
+                "Protocol": agent.Protocol,
+                "SecRuleEngine": agent.SecRuleEngine
             }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
