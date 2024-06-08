@@ -197,10 +197,10 @@ def get_log_xlsx():
 
 @app.get("/getLogWithinTime", tags=["logs"])
 def get_log_within_time(time: int, number: int = 10, page: int = 1,
-    src_ip: str = None, dest_ip: str = None, filters: str = None):
+    src_ip: str = None, local_port: str = None, filters: str = None):
     try:
         db = SessionLocal()
-        print(f"time: {time}, number: {number}, page: {page}, src_ip: {src_ip}, dest_ip: {dest_ip}, filters: {filters}")
+        print(f"time: {time}, number: {number}, page: {page}, src_ip: {src_ip}, local_port: {local_port}, filters: {filters}")
         query = db.query(ModsecLog1, ModsecHost.ServerName).join(
             ModsecHost, ModsecHost.Port == ModsecLog1.local_port
         )
@@ -212,8 +212,8 @@ def get_log_within_time(time: int, number: int = 10, page: int = 1,
         # Apply IP filters if provided
         if src_ip:
             query = query.filter(ModsecLog1.remote_address == src_ip)
-        if dest_ip:
-            query = query.filter(ModsecLog1.local_address == dest_ip)
+        if local_port:
+            query = query.filter(ModsecLog1.local_port == local_port)
         if filters:
             query = query.filter(ModsecLog1.message.ilike(f"%{filters}%"))
 
@@ -258,7 +258,7 @@ def get_log_within_time(time: int, number: int = 10, page: int = 1,
 
 @app.get("/get_log_within_time_xlsx", tags=["logs"])
 def get_log_within_time_xlsx(
-    time: int, src_ip: str = None, dest_ip: str = None, filters: str = None):
+    time: int, src_ip: str = None, local_port: str = None, filters: str = None):
     db = SessionLocal()
     try:
         query = db.query(ModsecLog1)
@@ -267,8 +267,8 @@ def get_log_within_time_xlsx(
         query = query.filter(ModsecLog1.event_time >= start_time, ModsecLog1.event_time <= end_time)
         if src_ip:
             query = query.filter(ModsecLog1.remote_address == src_ip)
-        if dest_ip:
-            query = query.filter(ModsecLog1.local_address == dest_ip)
+        if local_port:
+            query = query.filter(ModsecLog1.local_port == local_port)
         if filters:
             query = query.filter(ModsecLog1.message.ilike(f"%{filters}%"))
         logs = query.order_by(ModsecLog1.id.desc()).all()
@@ -330,18 +330,42 @@ def get_IP_attacker_within_time(time: int, number: int = 10, page: int = 1, dist
     finally:
         db.close()
 
+@app.get("/count_IP_attacker_within_time_by_ID", tags=["logs"])
+def count_IP_attacker_within_time_by_ID(id: int, time: int):
+    try:
+        db = SessionLocal()
+
+        # Count distinct IP addresses that have attacked within the given time frame for the specified ID
+        total_attacks = db.query(func.count(ModsecLog1.remote_address.distinct())).\
+            join(ModsecHost, ModsecLog1.local_port == ModsecHost.Port).\
+            filter(
+                ModsecLog1.event_time >= datetime.now() - timedelta(hours=time),
+                ModsecHost.id == id
+            ).scalar()
+
+        return {"total_ip_attacks": total_attacks}
+
+    except Exception as e:
+        print(e)
+        raise HTTPException(status_code=500, detail="Internal Server Error")
+    finally:
+        db.close()
+
 @app.get("/get_Attacks_Map", tags=["logs"])
 def get_Attacks_Map():
     db = SessionLocal()
     geoip_reader = Reader('/home/kali/Desktop/WAF/db/GeoLite2-City.mmdb')    
     try:
         recent_attacks = db.query(ModsecLog1.remote_address).distinct().limit(10).all()
-        print("recent_attacks: ", recent_attacks)
+        #recent_attacks = [('103.172.79.50',), ('149.28.159.120',)]
         attacks_info = []
         for attack in recent_attacks:
             ip = attack.remote_address
+            print(ip)
+            #ip = ip = attack[0]
             try:
                 response = geoip_reader.city(ip)
+                print(response.location)
                 attacks_info.append({
                     "ip": ip,
                     "latitude": response.location.latitude,
@@ -352,11 +376,42 @@ def get_Attacks_Map():
             except AddressNotFoundError:
                 # Xử lý trường hợp IP không tìm thấy vị trí
                 print(f"Location not found for IP: {ip}")
+        return attacks_info            
     except Exception as e:
         print(e)
         raise HTTPException(status_code=500, detail="Internal Server Error")
     finally:
         db.close()
+
+#get attack map theo IP
+@app.get("/getAttackMapIP", tags=["logs"])
+def get_attack_map_ip(ip: str):
+    geoip_reader = Reader('/home/kali/Desktop/WAF/db/GeoLite2-City.mmdb')
+
+    try:
+        # Ensure the IP is a valid format, if needed add validation here.
+        print(ip)
+        try:
+            response = geoip_reader.city(ip)
+            print(response.location)
+            attack_info = {
+                "ip": ip,
+                "latitude": response.location.latitude,
+                "longitude": response.location.longitude,
+                "city": response.city.name,
+                "country": response.country.name
+            }
+            return attack_info
+        except AddressNotFoundError:
+            # Handle case where IP location is not found
+            print(f"Location not found for IP: {ip}")
+            return {"error": "Location not found for the provided IP address."}
+    except Exception as e:
+        print(e)
+        raise HTTPException(status_code=500, detail="Internal Server Error")
+    finally:
+        geoip_reader.close()
+
 # get the number of times d in a period
 @app.get("/getDetectedTimes", tags=["logs"])
 def get_detected_times(time:int):
@@ -373,6 +428,29 @@ def get_detected_times(time:int):
     except Exception as e:
         print(e)
         raise HTTPException(status_code=500, detail="Internal Server Error")
+    finally:
+        db.close()
+
+@app.get("/getDetectedTimesByID", tags=["logs"])
+def get_detected_times_byID(time: int, id: int):
+    try:
+        db = SessionLocal()
+        print(f"time: {time}, id: {id}")
+
+        # Adjusting the query to join ModsecLog1 with ModsecHost
+        query = db.query(func.count(ModsecLog1.id)).\
+            join(ModsecHost, ModsecLog1.local_port == ModsecHost.Port).\
+            filter(
+                ModsecLog1.event_time >= datetime.now() - timedelta(hours=time),
+                ModsecHost.id == id
+            )
+        result = query.scalar()
+
+        return {"detected_times": result}
+
+    except Exception as e:
+        print(e)
+        raise HTTPException(status_code=500, detail=str(e))
     finally:
         db.close()
 
@@ -410,6 +488,44 @@ def graph_count_log_within_24h():
         raise HTTPException(status_code=500, detail="Internal Server Error")
     finally:
         db.close()
+
+@app.get("/graph_count_log_within_24h_byID", tags=["logs"])
+def graph_count_log_within_24h_byID(id:int):
+    # Tạo kết nối database
+    db = SessionLocal()
+    list_result = []
+
+    try:
+        current_time = datetime.now()
+        if current_time.minute > 0 or current_time.second > 0 or current_time.microsecond > 0:
+            current_time = current_time.replace(minute=0, second=0, microsecond=0) + timedelta(hours=1)
+        start_time = current_time - timedelta(days=1)
+        for i in range(8):
+            period_start = start_time + timedelta(hours=i*3)
+            period_end = start_time + timedelta(hours=(i+1)*3)
+
+            count = db.query(func.count(ModsecLog1.id)).join(
+                ModsecHost, ModsecHost.Port == ModsecLog1.local_port
+            ).filter(
+                ModsecLog1.event_time >= period_start,
+                ModsecLog1.event_time < period_end,
+                ModsecHost.id == id
+            ).scalar()
+
+            # Thêm kết quả vào danh sách
+            list_result.append({
+                "time": f"{period_start.strftime('%H.%M')}-{period_end.strftime('%H.%M')}",
+                "number_of_prevented": count
+            })
+
+        return list_result
+
+    except Exception as e:
+        print(e)
+        raise HTTPException(status_code=500, detail="Internal Server Error")
+    finally:
+        db.close()
+
 @app.get("/grap_TOP10_IP_source_addresses_png", tags=["logs"])
 def grap_TOP10_IP_source_addresses_png():
     db = SessionLocal()
@@ -620,94 +736,6 @@ def graph_Passed_and_Intercepted(
         db.close()
 
 #RULE  
-@app.get("/get_config", tags=["rules"])
-def get_config_modsecurity():
-    config_modsecurity_path = "/etc/modsecurity/modsecurity.conf"
-    try:
-        with open(config_modsecurity_path, 'r') as file:
-            content = file.read()
-            # Trả về nội dung dưới dạng Response với media_type là text/plain
-            return Response(content=content, media_type="text/plain")
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to read ModSecurity rule file: {e}")      
-
-class Config(BaseModel):
-    config_content: str
-@app.post("/update_config", tags=["rules"])
-async def update_config_modsecurity(config_content: Config):
-
-    config_modsecurity_path = "/etc/modsecurity/modsecurity.conf"
-    content = config_content.config_content
-    try:
-        # Mở file với mode 'w' và ghi nội dung rule_content vào đó
-        with open(config_modsecurity_path, 'w') as f:   
-            f.write(content)
-        # Sử dụng subprocess để reload Apache
-        subprocess.run(["sudo", "systemctl", "reload", "apache2"], check=True)
-        return {"message": "Config Modsecurity updated and Apache reloaded successfully."}
-    except subprocess.CalledProcessError as e:
-        raise HTTPException(status_code=500, detail=f"Failed to reload Apache: {e}")
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to update ModSecurity config file: {e}")
-
-@app.post("/update_mode_agent", tags=["rules"])
-def update_mode_agent(ServerName: str, mode: str):
-    db = SessionLocal()
-    config_file_path = f'/etc/apache2/sites-available/{ServerName}.conf'
-    if mode not in ['On', 'Off', 'DetectionOnly']:
-        raise HTTPException(status_code=400, detail="Invalid mode. Allowed values are On, Off, DetectionOnly.")
-    try:
-        with open(config_file_path, 'r') as file:
-            config_content = file.readlines()
-        for i, line in enumerate(config_content):
-            if 'SecRuleEngine' in line:
-                config_content[i] = re.sub(r'SecRuleEngine\s+\w+', f'SecRuleEngine {mode}', line)
-                break
-        with open(config_file_path, 'w') as file:
-            file.writelines(config_content)
-        try:
-            subprocess.run(['sudo', 'systemctl', 'reload', 'apache2'], check=True)
-        except subprocess.CalledProcessError as e:
-            print(f"Error restarting Apache: {e}")
-        modsec_host = db.query(ModsecHost).filter(ModsecHost.ServerName == ServerName).first()
-        if modsec_host is not None:
-            modsec_host.SecRuleEngine = mode  
-            db.commit()
-        return {"message": "ModSecurity configuration updated successfully."}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to update ModSecurity configuration: {str(e)}")        
-
-@app.post("/update_mode_AI", tags=["rules"])
-def update_mode_AI(mode: str):
-    security_conf_path = "/etc/apache2/mods-enabled/security2.conf"
-    if mode not in ['On', 'Off']:
-        raise HTTPException(status_code=400, detail="Invalid mode value")
-    try:
-        with open(security_conf_path, 'r') as file:
-            lines = file.readlines()
-    except IOError:
-        raise HTTPException(status_code=500, detail="Could not read security2.conf file")
-    new_lines = []
-    for line in lines:
-        if 'IncludeOptional /etc/modsecurity/rules/*.conf' in line:
-            if mode == 'On':
-                new_line = line.lstrip('#').replace('\n', '') + '\n'
-            elif mode == 'Off':
-                new_line = f'#{line}' if not line.startswith('#') else line
-            new_lines.append(new_line)
-        else:
-            new_lines.append(line)
-    try:
-        with open(security_conf_path, 'w') as file:
-            file.writelines(new_lines)
-    except IOError:
-        raise HTTPException(status_code=500, detail="Could not write to security2.conf file")
-    try:
-        subprocess.run(['sudo', 'systemctl', 'reload', 'apache2'], check=True)
-    except subprocess.CalledProcessError as e:
-        print(f"Error restarting Apache: {e}")
-
-    return {"detail": "Security2 configuration updated and Apache reloaded successfully"}
 
 @app.get("/get_rule", tags=["rules"])
 def get_rule_custom(ServerName: str):
@@ -730,10 +758,8 @@ async def update_rule_custom(ruleModel: RuleModel):
     rules = ruleModel.rules
     
     try:
-        # Mở file với mode 'w' và ghi nội dung rule_content vào đó
         with open(rule_file_path, 'w') as f:   
             f.write(rules)
-        # Sử dụng subprocess để reload Apache
         subprocess.run(["sudo", "systemctl", "reload", "apache2"], check=True)
         return {"message": f"Rule for {ruleModel.ServerName} updated and Apache reloaded successfully."}
     except subprocess.CalledProcessError as e:
@@ -906,7 +932,7 @@ def add_agent(agent: HostAdd):
         if check_vhost_exists(agent.Port, agent.ServerName):
             raise HTTPException(status_code=400, detail="VirtualHost with this port and ServerName already exists.")
         
-        new_vhost = add_new_vhost_entry(agent.Port, agent.ServerName, agent.ProxyPreserveHost, f'/ {agent.ProxyPass}/', f'/ {agent.ProxyPassReverse}/', error_path, f'403 {agent.ErrorDocument}', agent.Protocol)
+        new_vhost = add_new_vhost_entry(agent.Port, agent.ServerName, agent.ProxyPreserveHost, f'/ {agent.ProxyPass}', f'/ {agent.ProxyPassReverse}', error_path, f'403 {agent.ErrorDocument}', agent.Protocol)
         with open(config_file_path, 'a') as file:
             file.write(new_vhost)
         symlink_command = [
@@ -1045,15 +1071,8 @@ def update_agent(host_id: int, host_update: HostUpdate):
                     vhost_content[i] = f"    ErrorDocument 403 {host_update.ErrorDocument}\n"
             elif vhost_started and "</VirtualHost>" in line.strip():
                 vhost_started = False
-                    
-                
-
-
-    # Write the updated content back to the Apache configuration file
         with open(config_file_path, 'w') as file:
             file.writelines(vhost_content)
-
-    # Restart Apache to apply changes
     restart_apache()
 
     return {"message": "Host configuration updated successfully."}
@@ -1127,5 +1146,221 @@ def delete_agent(host_id: int):
     finally:
         db.close()
 
+#config
+@app.get("/get_config_modsecurity", tags=["config"])
+async def get_config_modsecurity():
+    config_modsecurity_path = "/etc/modsecurity/modsecurity.conf"
+    try:
+        with open(config_modsecurity_path, 'r') as file:
+            config_lines = file.readlines()
+
+        # Define the directives of interest
+        directives_of_interest = {
+            'SecRuleEngine': '',
+            'SecDebugLogLevel': '',
+            'SecAuditEngine': '',
+            'SecAuditLogRelevantStatus': '',
+            'SecAuditLogParts': '',
+            'SecAuditLogType': '',
+            'SecStatusEngine': ''
+        }
+
+        # Prepare a regex pattern to match the directives
+        pattern = re.compile(r'(' + '|'.join(directives_of_interest.keys()) + r')\s+(.*)')
+
+        # Parse the file lines for the directives
+        for line in config_lines:
+            match = pattern.match(line.strip())
+            if match:
+                key, value = match.groups()
+                directives_of_interest[key] = value.strip()
+
+        # Return the directives in the desired format
+        return directives_of_interest
+
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail="Configuration file not found.")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+class ModSecurityConfig(BaseModel):
+    SecRuleEngine: Optional[str] = Field(default="")
+    SecDebugLogLevel: Optional[str] = Field(default="")
+    SecAuditEngine:Optional[str] = Field(default="")
+    SecAuditLogRelevantStatus: Optional[str] = Field(default="")
+    SecAuditLogParts: Optional[str] = Field(default="")
+    SecAuditLogType: Optional[str] = Field(default="")
+    SecStatusEngine: Optional[str] = Field(default="")
+
+
+@app.post("/update_config_modsecurity", tags=["config"])
+async def update_config_modsecurity(config: ModSecurityConfig):
+    config_modsecurity_path = "/etc/modsecurity/modsecurity.conf"
+    try:
+        # Read the original configuration file
+        with open(config_modsecurity_path, 'r') as file:
+            config_lines = file.readlines()
+
+        # Create a dictionary from the Pydantic model for easier processing
+        config_dict = config.dict(exclude_unset=True)
+
+        # Update the configuration lines with the new values
+        updated_config_lines = []
+        for line in config_lines:
+            # Check if the line contains a configuration directive we want to update
+            match = re.match(r'(Sec[A-Za-z]+)\s+(.+)', line.strip())
+            if match and match.group(1) in config_dict:
+                # Replace the old value with the new one
+                directive = match.group(1)
+                new_value = config_dict[directive]
+                if new_value:
+                    updated_config_lines.append(f"{directive} {new_value}\n")
+                else:
+                    updated_config_lines.append(line)
+            else:
+                # Keep the original line
+                updated_config_lines.append(line)
+
+        # Write the updated configuration back to the file
+        with open(config_modsecurity_path, 'w') as file:
+            file.writelines(updated_config_lines)
+
+        return {"message": "Configuration updated successfully."}
+
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail="Configuration file not found.")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/update_mode_agent", tags=["config"])
+def update_mode_agent(ServerName: str, mode: str):
+    db = SessionLocal()
+    config_file_path = f'/etc/apache2/sites-available/{ServerName}.conf'
+    if mode not in ['On', 'Off', 'DetectionOnly']:
+        raise HTTPException(status_code=400, detail="Invalid mode. Allowed values are On, Off, DetectionOnly.")
+    try:
+        with open(config_file_path, 'r') as file:
+            config_content = file.readlines()
+        for i, line in enumerate(config_content):
+            if 'SecRuleEngine' in line:
+                config_content[i] = re.sub(r'SecRuleEngine\s+\w+', f'SecRuleEngine {mode}', line)
+                break
+        with open(config_file_path, 'w') as file:
+            file.writelines(config_content)
+        try:
+            subprocess.run(['sudo', 'systemctl', 'reload', 'apache2'], check=True)
+        except subprocess.CalledProcessError as e:
+            print(f"Error restarting Apache: {e}")
+        modsec_host = db.query(ModsecHost).filter(ModsecHost.ServerName == ServerName).first()
+        if modsec_host is not None:
+            modsec_host.SecRuleEngine = mode  
+            db.commit()
+        return {"message": "ModSecurity configuration updated successfully."}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to update ModSecurity configuration: {str(e)}")     
+
+@app.get("/get_mode_AI_CNN", tags=["config"])
+def get_mode_AI_CNN():
+    security_conf_path = "/etc/apache2/mods-enabled/security2.conf"
+    try:
+        with open(security_conf_path, 'r') as file:
+            lines = file.readlines()
+    except IOError:
+        raise HTTPException(status_code=500, detail="Could not read security2.conf file")
+    for line in lines:
+        if 'IncludeOptional /etc/modsecurity/ruleAI/CNN.conf' in line:
+            line=line.strip()
+            if line.startswith('#'):
+                return {"mode": "Off"}
+            else:
+                return {"mode": "On"}
+    return {"mode": "Off"}
+
+@app.post("/update_mode_AI_CNN", tags=["config"])
+def update_mode_AI_CNN(mode: str):
+    security_conf_path = "/etc/apache2/mods-enabled/security2.conf"
+    if mode not in ['On', 'Off']:
+        raise HTTPException(status_code=400, detail="Invalid mode value")
+    try:
+        with open(security_conf_path, 'r') as file:
+            lines = file.readlines()
+    except IOError:
+        raise HTTPException(status_code=500, detail="Could not read security2.conf file")
+    new_lines = []
+    for line in lines:
+        if 'IncludeOptional /etc/modsecurity/ruleAI/CNN.conf' in line:
+            if mode == 'On':
+                # xóa kí tự # trước 'IncludeOptional /etc/modsecurity/rules/*.conf'
+                new_line = line.replace('#IncludeOptional', 'IncludeOptional') if '#IncludeOptional' in line else line
+                print(new_line)
+            elif mode == 'Off':
+                new_line = line.replace('IncludeOptional', '#IncludeOptional') if '#IncludeOptional' not in line else line
+            new_lines.append(new_line)
+        else:
+            new_lines.append(line)
+    try:
+        with open(security_conf_path, 'w') as file:
+            file.writelines(new_lines)
+    except IOError:
+        raise HTTPException(status_code=500, detail="Could not write to security2.conf file")
+    try:
+        subprocess.run(['sudo', 'systemctl', 'reload', 'apache2'], check=True)
+    except subprocess.CalledProcessError as e:
+        print(f"Error restarting Apache: {e}")
+
+    return {"detail": "Security2 configuration updated and Apache reloaded successfully"}
+
+@app.get("/get_mode_AI_vtr", tags=["config"])
+def get_mode_AI_vtr():
+    security_conf_path = "/etc/apache2/mods-enabled/security2.conf"
+    try:
+        with open(security_conf_path, 'r') as file:
+            lines = file.readlines()
+    except IOError:
+        raise HTTPException(status_code=500, detail="Could not read security2.conf file")
+    for line in lines:
+        if 'IncludeOptional /etc/modsecurity/ruleAI/vtr_tfidf.conf' in line:
+            line=line.strip()
+            if line.startswith('#'):
+                return {"mode": "Off"}
+            else:
+                return {"mode": "On"}
+    return {"mode": "Off"}
+
+@app.post("/update_mode_AI_vtr", tags=["config"])
+def update_mode_AI_vtr(mode: str):
+    security_conf_path = "/etc/apache2/mods-enabled/security2.conf"
+    if mode not in ['On', 'Off']:
+        raise HTTPException(status_code=400, detail="Invalid mode value")
+    try:
+        with open(security_conf_path, 'r') as file:
+            lines = file.readlines()
+    except IOError:
+        raise HTTPException(status_code=500, detail="Could not read security2.conf file")
+    new_lines = []
+    for line in lines:
+        if 'IncludeOptional /etc/modsecurity/ruleAI/vtr_tfidf.conf' in line:
+            if mode == 'On':
+                # xóa kí tự # trước 'IncludeOptional /etc/modsecurity/rules/*.conf'
+                new_line = line.replace('#IncludeOptional', 'IncludeOptional') if '#IncludeOptional' in line else line
+                print(new_line)
+            elif mode == 'Off':
+                new_line = line.replace('IncludeOptional', '#IncludeOptional') if '#IncludeOptional' not in line else line
+            new_lines.append(new_line)
+        else:
+            new_lines.append(line)
+    try:
+        with open(security_conf_path, 'w') as file:
+            file.writelines(new_lines)
+    except IOError:
+        raise HTTPException(status_code=500, detail="Could not write to security2.conf file")
+    try:
+        subprocess.run(['sudo', 'systemctl', 'reload', 'apache2'], check=True)
+    except subprocess.CalledProcessError as e:
+        print(f"Error restarting Apache: {e}")
+
+    return {"detail": "Security2 configuration updated and Apache reloaded successfully"}
+
 if __name__ == "__main__":
     uvicorn.run("main:app", host="0.0.0.0", port=5555, reload=True)
+
