@@ -54,7 +54,7 @@ def add_new_vhost_entry(port, servername, ProxyPreserveHost, ProxyPass, ProxyPas
     ErrorDocument {ErrorDocument}
     <IfModule mod_security2.c>
         SecRuleEngine DetectionOnly
-        Include /etc/modsecurity/custom_rules/{servername}_rules.conf
+        Include /etc/modsecurity/custom_rules/{servername}_{port}_rules.conf
     </IfModule>
 </VirtualHost>
 """
@@ -70,7 +70,7 @@ def add_new_vhost_entry(port, servername, ProxyPreserveHost, ProxyPass, ProxyPas
     ErrorDocument {ErrorDocument}
     <IfModule mod_security2.c>
         SecRuleEngine DetectionOnly
-        Include /etc/modsecurity/custom_rules/{servername}_rules.conf
+        Include /etc/modsecurity/custom_rules/{servername}_{port}_rules.conf
     </IfModule>
 </VirtualHost>
 """

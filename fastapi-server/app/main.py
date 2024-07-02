@@ -9,9 +9,11 @@ import asyncio
 import subprocess
 from fastapi.middleware.cors import CORSMiddleware
 import uvicorn
+import psutil
 import pandas as pd
 import re
 import os
+import glob
 from io import BytesIO
 from fastapi.responses import StreamingResponse
 from sqlalchemy import create_engine, Column, Integer, String
@@ -19,8 +21,8 @@ from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
 from datetime import datetime, timedelta  # Thêm timedelta vào import
 from sqlalchemy import func
+from sqlalchemy import and_
 from sqlalchemy import or_
-from ruleEngine import update_modsecurity_config
 from ruleEngine import restart_apache
 from ruleEngine import add_new_vhost_entry
 from pathlib import Path
@@ -44,7 +46,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-SQLITE_DATABASE_URL  = "sqlite:////home/kali/Desktop/WAF/db/modsec.db"
+SQLITE_DATABASE_URL  = "sqlite:////learning/modsec.db"
 engine = create_engine(SQLITE_DATABASE_URL,connect_args={"check_same_thread": False})
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
@@ -125,7 +127,7 @@ def get_log(number: int = 10, page: int = 1, distinct: int = 0, filters: str = N
     db = SessionLocal()
     try:
         query = db.query(ModsecLog1, ModsecHost.ServerName).join(
-            ModsecHost, ModsecHost.Port == ModsecLog1.local_port
+            ModsecHost, ModsecHost.ServerName == ModsecLog1.request_host
         )
         if filters:
             query = query.filter(ModsecLog1.message_msg.ilike(f"%{filters}%"))
@@ -530,35 +532,19 @@ def graph_count_log_within_24h_byID(id:int):
 def grap_TOP10_IP_source_addresses_png():
     db = SessionLocal()
     try:
-        # query = db.query(ModsecLog.remote_address, func.count(ModsecLog.id)).group_by(ModsecLog.remote_address).order_by(func.count(ModsecLog.id).desc()).limit(10)
-        # result = query.all()
-        # list_result = []
-        # for ip, count in result:
-        #     list_result.append({
-        #         "ip": ip,
-        #         "count": count
-        #     })
-        # return list_result
         src_ip_data = db.query(ModsecLog1.remote_address).all()
-    
-    # Count occurrences of each IP
         src_ip_counter = Counter([data.remote_address for data in src_ip_data])
         top10_ips = src_ip_counter.most_common(10)
 
-    # Plot the graph
         fig, ax = plt.subplots()
         ips, counts = zip(*top10_ips)
         ax.bar(ips, counts)
         ax.set_title("TOP 10 IP Source Addresses")
         ax.set_ylabel("Count")
         ax.set_xticklabels(ips, rotation=45, ha="right")
-
-    # Save the graph to a temporary file
         temp_file = NamedTemporaryFile(delete=False, suffix='.png')
         plt.savefig(temp_file.name)
         plt.close(fig)
-    
-    # Return the graph as a file response
         return FileResponse(path=temp_file.name, filename="top10_ip_source_addresses.png", media_type='image/png')
     except Exception as e:
         print(e)
@@ -889,10 +875,10 @@ def get_agent_by_id(host_id: int):
         db.close()
 @app.post("/addagent", tags=["agents"])
 def add_agent(agent: HostAdd):
-    config_file_path = f'/etc/apache2/sites-available/{agent.ServerName}.conf'
+    config_file_path = f'/etc/apache2/sites-available/{agent.ServerName}_{agent.Port}.conf'
     config_file_apache = '/etc/apache2/apache2.conf'
-    rule_path = f'/etc/modsecurity/custom_rules/{agent.ServerName}_rules.conf'
-    error_path = f'/var/log/apache2/{agent.ServerName}_error.log'
+    rule_path = f'/etc/modsecurity/custom_rules/{agent.ServerName}_{agent.Port}_rules.conf'
+    error_path = f'/var/log/apache2/{agent.ServerName}_{agent.Port}_error.log'
     #create rule_path use os
     if not os.path.exists(rule_path):
         with open(rule_path, 'w') as file:
@@ -908,7 +894,7 @@ def add_agent(agent: HostAdd):
     db = SessionLocal()
     def check_vhost_exists(port, servername):
     # Kiểm tra xem có bản ghi nào có port hoặc servername như đã cho hay không
-        existing_host = db.query(ModsecHost).filter(or_(ModsecHost.Port == port, ModsecHost.ServerName == servername)).first()
+        existing_host = db.query(ModsecHost).filter(and_(ModsecHost.Port == port, ModsecHost.ServerName == servername)).first()
         if existing_host:
             print("Host đã tồn tại")
             return True  # Bản ghi đã tồn tại
@@ -937,8 +923,8 @@ def add_agent(agent: HostAdd):
             file.write(new_vhost)
         symlink_command = [
         'sudo', 'ln', '-s', 
-        f'/etc/apache2/sites-available/{agent.ServerName}.conf', 
-        f'/etc/apache2/sites-enabled/{agent.ServerName}.conf'
+        f'/etc/apache2/sites-available/{agent.ServerName}_{agent.Port}.conf', 
+        f'/etc/apache2/sites-enabled/{agent.ServerName}_{agent.Port}.conf'
         ]
         try:
             subprocess.run(symlink_command, check=True)
@@ -995,7 +981,7 @@ def update_agent(host_id: int, host_update: HostUpdate):
 ]
     # Fetch the host from the database
     db_host = db.query(ModsecHost).filter(ModsecHost.id == host_id).first()
-    config_file_path = f'/etc/apache2/sites-available/{db_host.ServerName}.conf'
+    config_file_path = f'/etc/apache2/sites-available/{db_host.ServerName}_{db_host.Port}.conf'
     if db_host is None:
         raise HTTPException(status_code=404, detail="Host not found")
 
@@ -1081,8 +1067,15 @@ def update_agent(host_id: int, host_update: HostUpdate):
 def delete_agent(host_id: int):
     db = SessionLocal()
     def check_port_in_apache_conf(port, file_content):
+        # Find out if there are any other hosts with the same port as host_id        
         listen_line = f"Listen {port}"
         return any(line.strip() == listen_line for line in file_content)
+    def check_other_hosts_with_same_port(port, host_id):
+        # Kiểm tra xem có host nào khác sử dụng cùng port không
+        other_hosts = db.query(ModsecHost).filter(
+            and_(ModsecHost.Port == port, ModsecHost.id != host_id)
+        ).all()
+        return len(other_hosts) > 0
     try:
         # Fetch the host from the database
         try:
@@ -1101,19 +1094,27 @@ def delete_agent(host_id: int):
         except Exception as e:
             raise HTTPException(status_code=500, detail=str(e))
         # Close port
-        config_file_path = Path(f'/etc/apache2/sites-available/{db_host.ServerName}.conf')
+        config_file_path = Path(f'/etc/apache2/sites-available/{db_host.ServerName}_{db_host.Port}.conf')
         config_file_apache = '/etc/apache2/apache2.conf'
-        rule_path = f'/etc/modsecurity/custom_rules/{db_host.ServerName}_rules.conf'
-        error_path = f'/var/log/apache2/{db_host.ServerName}_error.log'
+        rule_path = f'/etc/modsecurity/custom_rules/{db_host.ServerName}_{db_host.Port}_rules.conf'
         with open(config_file_apache, 'r') as file:
             apache_content = file.readlines()
-        if check_port_in_apache_conf(db_host.Port, apache_content):
-            with open(config_file_apache, 'w') as file:
-                for line in apache_content:
-                    if line.strip() != f"Listen {db_host.Port}":
-                        file.write(line)                        
-            subprocess.run(['sudo', 'service', 'apache2', 'reload'], check=True)
-
+        if not check_other_hosts_with_same_port(db_host.Port, db_host.id):
+            if check_port_in_apache_conf(db_host.Port, apache_content):
+                with open(config_file_apache, 'w') as file:
+                    for line in apache_content:
+                        if line.strip() != f"Listen {db_host.Port}":
+                            file.write(line)
+                subprocess.run(['sudo', 'service', 'apache2', 'reload'], check=True)
+        # Remove the symbolic link
+        symbolic_link = Path(f'/etc/apache2/sites-enabled/{db_host.ServerName}_{db_host.Port}.conf')
+        if symbolic_link.exists():
+            try:
+                symbolic_link.unlink()
+                if symbolic_link.exists():
+                    subprocess.run(['sudo', 'rm', symbolic_link], check=True)
+            except Exception as e:
+                raise HTTPException(status_code=500, detail=f"Failed to remove symbolic link: {e}")
         # Delete the Apache configuration file
         if config_file_path.exists():            
             try:
@@ -1121,24 +1122,16 @@ def delete_agent(host_id: int):
             except subprocess.CalledProcessError as e:
                 raise HTTPException(status_code=500, detail=f"Failed to delete Apache configuration file: {e}")
         else:
-            pass
-
-        # Remove the symbolic link
-        symbolic_link = Path(f'/etc/apache2/sites-enabled/{db_host.ServerName}.conf')
-        if symbolic_link.exists():
-            try:
-                symbolic_link.unlink()
-            except Exception as e:
-                raise HTTPException(status_code=500, detail=f"Failed to remove file: {e}")
-        else:
-            pass
+            pass        
         restart_apache()
         #Delete rule path if exits
         if os.path.exists(rule_path):
             os.remove(rule_path)
-        #Delete error path if exits
-        if os.path.exists(error_path):
-            os.remove(error_path)
+         # Delete all log files that start with the server name
+        log_files_pattern = f'/var/log/apache2/{db_host.ServerName}_{db_host.Port}_error.log*'
+        log_files = glob.glob(log_files_pattern)
+        for log_file in log_files:
+            os.remove(log_file)
 
         return {"message": "Host deleted successfully."}
     except Exception as e:
@@ -1361,6 +1354,46 @@ def update_mode_AI_vtr(mode: str):
 
     return {"detail": "Security2 configuration updated and Apache reloaded successfully"}
 
+# performance
+@app.get("/get_performance", tags=["performance"])
+def get_system_info():
+    # Lấy thông tin CPU
+    cpu_usage = psutil.cpu_percent(interval=1)
+    cpu_count = psutil.cpu_count()
+    
+    # Lấy thông tin RAM
+    virtual_mem = psutil.virtual_memory()
+    ram_total = virtual_mem.total
+    ram_used = virtual_mem.used
+    ram_free = virtual_mem.free
+    ram_percent = virtual_mem.percent
+    
+    # Lấy thông tin lưu trữ
+    disk_usage = psutil.disk_usage('/')
+    storage_total = disk_usage.total
+    storage_used = disk_usage.used
+    storage_free = disk_usage.free
+    storage_percent = disk_usage.percent
+    
+    # Trả về thông tin dưới dạng JSON
+    return {
+        "cpu": {
+            "usage_percent": cpu_usage,
+            "core": cpu_count,
+        },
+        "ram": {
+            "total": ram_total,
+            "used": ram_used,
+            "free": ram_free,
+            "percent": ram_percent,
+        },
+        "storage": {
+            "total": storage_total,
+            "used": storage_used,
+            "free": storage_free,
+            "percent": storage_percent,
+        }
+    }
 if __name__ == "__main__":
     uvicorn.run("main:app", host="0.0.0.0", port=5555, reload=True)
 
