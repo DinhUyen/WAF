@@ -14,6 +14,7 @@ import pandas as pd
 import re
 import os
 import glob
+from sqlalchemy import case
 from io import BytesIO
 from fastapi.responses import StreamingResponse
 from sqlalchemy import create_engine, Column, Integer, String
@@ -23,6 +24,7 @@ from datetime import datetime, timedelta  # Thêm timedelta vào import
 from sqlalchemy import func
 from sqlalchemy import and_
 from sqlalchemy import or_
+from sqlalchemy.sql import text, func
 from ruleEngine import restart_apache
 from ruleEngine import add_new_vhost_entry
 from pathlib import Path
@@ -126,8 +128,13 @@ def read_root():
 def get_log(number: int = 10, page: int = 1, distinct: int = 0, filters: str = None):
     db = SessionLocal()
     try:
+        join_condition = or_(
+            (ModsecHost.Port.in_([80, 443]) & (ModsecHost.ServerName == ModsecLog1.request_host)),
+            ((ModsecHost.Port.notin_([80, 443])) & ((ModsecHost.ServerName + ":" + ModsecHost.Port.cast(String)) == ModsecLog1.request_host))
+        )
+
         query = db.query(ModsecLog1, ModsecHost.ServerName).join(
-            ModsecHost, ModsecHost.ServerName == ModsecLog1.request_host
+            ModsecHost, join_condition
         )
         if filters:
             query = query.filter(ModsecLog1.message_msg.ilike(f"%{filters}%"))
@@ -199,12 +206,17 @@ def get_log_xlsx():
 
 @app.get("/getLogWithinTime", tags=["logs"])
 def get_log_within_time(time: int, number: int = 10, page: int = 1,
-    src_ip: str = None, local_port: str = None, filters: str = None):
+    src_ip: str = None, local_port: str = None, ServerName: str = None, filters: str = None):
     try:
         db = SessionLocal()
-        print(f"time: {time}, number: {number}, page: {page}, src_ip: {src_ip}, local_port: {local_port}, filters: {filters}")
+        print(f"time: {time}, number: {number}, page: {page}, src_ip: {src_ip}, local_port: {local_port}, ServerName: {ServerName}, filters: {filters}")
+        join_condition = or_(
+            (ModsecHost.Port.in_([80, 443]) & (ModsecHost.ServerName == ModsecLog1.request_host)),
+            ((ModsecHost.Port.notin_([80, 443])) & ((ModsecHost.ServerName + ":" + ModsecHost.Port.cast(String)) == ModsecLog1.request_host))
+        )
+
         query = db.query(ModsecLog1, ModsecHost.ServerName).join(
-            ModsecHost, ModsecHost.Port == ModsecLog1.local_port
+            ModsecHost, join_condition
         )
         # Apply time filter
         end_time = datetime.now()
@@ -216,6 +228,8 @@ def get_log_within_time(time: int, number: int = 10, page: int = 1,
             query = query.filter(ModsecLog1.remote_address == src_ip)
         if local_port:
             query = query.filter(ModsecLog1.local_port == local_port)
+        if ServerName:
+            query = query.filter(ModsecHost.ServerName == ServerName)
         if filters:
             query = query.filter(ModsecLog1.message.ilike(f"%{filters}%"))
 
@@ -260,7 +274,7 @@ def get_log_within_time(time: int, number: int = 10, page: int = 1,
 
 @app.get("/get_log_within_time_xlsx", tags=["logs"])
 def get_log_within_time_xlsx(
-    time: int, src_ip: str = None, local_port: str = None, filters: str = None):
+    time: int, src_ip: str = None, local_port: str = None, ServerName: str = None, filters: str = None):
     db = SessionLocal()
     try:
         query = db.query(ModsecLog1)
@@ -271,6 +285,8 @@ def get_log_within_time_xlsx(
             query = query.filter(ModsecLog1.remote_address == src_ip)
         if local_port:
             query = query.filter(ModsecLog1.local_port == local_port)
+        if ServerName:
+            query = query.join(ModsecHost, ModsecLog1.local_port == ModsecHost.Port).filter(ModsecHost.ServerName == ServerName)
         if filters:
             query = query.filter(ModsecLog1.message.ilike(f"%{filters}%"))
         logs = query.order_by(ModsecLog1.id.desc()).all()
@@ -337,9 +353,14 @@ def count_IP_attacker_within_time_by_ID(id: int, time: int):
     try:
         db = SessionLocal()
 
+        join_condition = or_(
+            (ModsecHost.Port.in_([80, 443]) & (ModsecHost.ServerName == ModsecLog1.request_host)),
+            ((ModsecHost.Port.notin_([80, 443])) & ((ModsecHost.ServerName + ":" + ModsecHost.Port.cast(String)) == ModsecLog1.request_host))
+        )
+
         # Count distinct IP addresses that have attacked within the given time frame for the specified ID
         total_attacks = db.query(func.count(ModsecLog1.remote_address.distinct())).\
-            join(ModsecHost, ModsecLog1.local_port == ModsecHost.Port).\
+            join(ModsecHost, join_condition).\
             filter(
                 ModsecLog1.event_time >= datetime.now() - timedelta(hours=time),
                 ModsecHost.id == id
@@ -438,16 +459,19 @@ def get_detected_times_byID(time: int, id: int):
     try:
         db = SessionLocal()
         print(f"time: {time}, id: {id}")
+        join_condition = or_(
+            (ModsecHost.Port.in_([80, 443]) & (ModsecHost.ServerName == ModsecLog1.request_host)),
+            ((ModsecHost.Port.notin_([80, 443])) & ((ModsecHost.ServerName + ":" + ModsecHost.Port.cast(String)) == ModsecLog1.request_host))
+        )
 
         # Adjusting the query to join ModsecLog1 with ModsecHost
         query = db.query(func.count(ModsecLog1.id)).\
-            join(ModsecHost, ModsecLog1.local_port == ModsecHost.Port).\
+            join(ModsecHost, join_condition).\
             filter(
                 ModsecLog1.event_time >= datetime.now() - timedelta(hours=time),
                 ModsecHost.id == id
             )
         result = query.scalar()
-
         return {"detected_times": result}
 
     except Exception as e:
@@ -506,8 +530,14 @@ def graph_count_log_within_24h_byID(id:int):
             period_start = start_time + timedelta(hours=i*3)
             period_end = start_time + timedelta(hours=(i+1)*3)
 
+           # Define the condition for joining based on the value of ModsecHost.Port
+            join_condition = or_(
+                (ModsecHost.Port.in_([80, 443]) & (ModsecHost.ServerName == ModsecLog1.request_host)),
+                ((ModsecHost.Port.notin_([80, 443])) & ((ModsecHost.ServerName + ":" + ModsecHost.Port.cast(String)) == ModsecLog1.request_host))
+            )
+
             count = db.query(func.count(ModsecLog1.id)).join(
-                ModsecHost, ModsecHost.Port == ModsecLog1.local_port
+                ModsecHost, join_condition
             ).filter(
                 ModsecLog1.event_time >= period_start,
                 ModsecLog1.event_time < period_end,
@@ -528,29 +558,6 @@ def graph_count_log_within_24h_byID(id:int):
     finally:
         db.close()
 
-@app.get("/grap_TOP10_IP_source_addresses_png", tags=["logs"])
-def grap_TOP10_IP_source_addresses_png():
-    db = SessionLocal()
-    try:
-        src_ip_data = db.query(ModsecLog1.remote_address).all()
-        src_ip_counter = Counter([data.remote_address for data in src_ip_data])
-        top10_ips = src_ip_counter.most_common(10)
-
-        fig, ax = plt.subplots()
-        ips, counts = zip(*top10_ips)
-        ax.bar(ips, counts)
-        ax.set_title("TOP 10 IP Source Addresses")
-        ax.set_ylabel("Count")
-        ax.set_xticklabels(ips, rotation=45, ha="right")
-        temp_file = NamedTemporaryFile(delete=False, suffix='.png')
-        plt.savefig(temp_file.name)
-        plt.close(fig)
-        return FileResponse(path=temp_file.name, filename="top10_ip_source_addresses.png", media_type='image/png')
-    except Exception as e:
-        print(e)
-        raise HTTPException(status_code=500, detail="Internal Server Error")
-    finally:
-        db.close()
 @app.get("/grap_TOP10_IP_source_addresses_json", tags=["logs"])
 def grap_TOP10_IP_source_addresses_json():
     db = SessionLocal()
@@ -724,8 +731,8 @@ def graph_Passed_and_Intercepted(
 #RULE  
 
 @app.get("/get_rule", tags=["rules"])
-def get_rule_custom(ServerName: str):
-    rule_file_path = f'/etc/modsecurity/custom_rules/{ServerName}_rules.conf'
+def get_rule_custom(ServerName: str, Port: int):
+    rule_file_path = f'/etc/modsecurity/custom_rules/{ServerName}_{Port}_rules.conf'
     try:
         with open(rule_file_path, 'r') as file:
             content = file.read()
@@ -878,16 +885,7 @@ def add_agent(agent: HostAdd):
     config_file_path = f'/etc/apache2/sites-available/{agent.ServerName}_{agent.Port}.conf'
     config_file_apache = '/etc/apache2/apache2.conf'
     rule_path = f'/etc/modsecurity/custom_rules/{agent.ServerName}_{agent.Port}_rules.conf'
-    error_path = f'/var/log/apache2/{agent.ServerName}_{agent.Port}_error.log'
-    #create rule_path use os
-    if not os.path.exists(rule_path):
-        with open(rule_path, 'w') as file:
-            pass
-    #create error_path
-    if not os.path.exists(error_path):
-        with open(error_path, 'w') as file:
-            pass
-    
+    error_path = f'/var/log/apache2/{agent.ServerName}_{agent.Port}_error.log'    
     def check_port_in_apache_conf(port, file_content):
         listen_line = f"Listen {port}"
         return any(line.strip() == listen_line for line in file_content)
@@ -905,19 +903,16 @@ def add_agent(agent: HostAdd):
     try:
         with open(config_file_apache, 'r') as file:
             apache_content = file.readlines()
-        
-        if not check_port_in_apache_conf(agent.Port, apache_content):
-            with open(config_file_apache, 'a') as file:
-                file.write(f"Listen {agent.Port}\n")
-            subprocess.run(['sudo', 'service', 'apache2', 'reload'], check=True)
-        with open(config_file_path, 'a') as file:
-            pass
-        with open(config_file_path, 'r') as file:
-            vhost_content = file.readlines()
-        
-        if check_vhost_exists(agent.Port, agent.ServerName):
+        if not check_vhost_exists(agent.Port, agent.ServerName):
+            if agent.Port not in [443, 80]:
+                if not check_port_in_apache_conf(agent.Port, apache_content):
+                    with open(config_file_apache, 'a') as file:
+                        file.write(f"Listen {agent.Port}\n")
+                    subprocess.run(['sudo', 'service', 'apache2', 'reload'], check=True)
+        else:
             raise HTTPException(status_code=400, detail="VirtualHost with this port and ServerName already exists.")
-        
+        with open(config_file_path, 'a') as file:
+            pass                
         new_vhost = add_new_vhost_entry(agent.Port, agent.ServerName, agent.ProxyPreserveHost, f'/ {agent.ProxyPass}', f'/ {agent.ProxyPassReverse}', error_path, f'403 {agent.ErrorDocument}', agent.Protocol)
         with open(config_file_path, 'a') as file:
             file.write(new_vhost)
@@ -931,8 +926,15 @@ def add_agent(agent: HostAdd):
         except subprocess.CalledProcessError as e:
             db.rollback()
             raise HTTPException(status_code=500, detail=f"Failed to create symbolic link: {e}")
-        restart_apache()
-                
+    #create rule_path use os
+        if not os.path.exists(rule_path):
+            with open(rule_path, 'w') as file:
+                pass
+    #create error_path
+        if not os.path.exists(error_path):
+            with open(error_path, 'w') as file:
+                pass
+        restart_apache()                
         new_host = ModsecHost(
             Port=agent.Port,
             ServerName=agent.ServerName,
@@ -1226,9 +1228,9 @@ async def update_config_modsecurity(config: ModSecurityConfig):
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/update_mode_agent", tags=["config"])
-def update_mode_agent(ServerName: str, mode: str):
+def update_mode_agent(ServerName: str, Port: int, mode: str):
     db = SessionLocal()
-    config_file_path = f'/etc/apache2/sites-available/{ServerName}.conf'
+    config_file_path = f'/etc/apache2/sites-available/{ServerName}_{Port}.conf'
     if mode not in ['On', 'Off', 'DetectionOnly']:
         raise HTTPException(status_code=400, detail="Invalid mode. Allowed values are On, Off, DetectionOnly.")
     try:
@@ -1244,7 +1246,9 @@ def update_mode_agent(ServerName: str, mode: str):
             subprocess.run(['sudo', 'systemctl', 'reload', 'apache2'], check=True)
         except subprocess.CalledProcessError as e:
             print(f"Error restarting Apache: {e}")
-        modsec_host = db.query(ModsecHost).filter(ModsecHost.ServerName == ServerName).first()
+        modsec_host = db.query(ModsecHost).filter(
+            and_(ModsecHost.ServerName == ServerName, ModsecHost.Port == Port)
+        ).first()
         if modsec_host is not None:
             modsec_host.SecRuleEngine = mode  
             db.commit()
