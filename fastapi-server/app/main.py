@@ -113,6 +113,16 @@ class ModsecLog1(Base):
     message_accuracy = Column(String)
     message_maturity = Column(String)
     full_message_line = Column(String)
+
+class Request(Base):
+    __tablename__ = "requests"
+    id = Column(Integer, primary_key=True, index=True)
+    server_name = Column(String)
+    port = Column(String)
+    target_url = Column(String)
+    source_ip = Column(String)
+    datetime_request = Column(String)
+    
 class RuleContent(BaseModel):
     rule_content: str
 @app.get("/")
@@ -163,6 +173,33 @@ def get_log(number: int = 10, page: int = 1, distinct: int = 0, filters: str = N
     except Exception as e:
         print(e)
         raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        db.close()
+
+@app.get("/count_request", tags=["logs"])
+def count_request(time:int):
+    db = SessionLocal()
+    try:
+        current_time = datetime.now()
+        time_threshold = current_time - timedelta(hours=time)
+        count = db.query(Request).filter(Request.datetime_request >= time_threshold, Request.datetime_request<= current_time).count()
+        return count
+    except Exception as e:
+        print(e)
+        raise HTTPException(status_code=500, detail="Internal Server Error")
+    finally:
+        db.close()
+@app.get("/count_request_by_servername", tags=["logs"])
+def count_request(time:int, local_port: str = None, ServerName: str = None):
+    db = SessionLocal()
+    try:
+        current_time = datetime.now()
+        time_threshold = current_time - timedelta(hours=time)
+        count = db.query(Request).filter(Request.datetime_request >= time_threshold, Request.datetime_request<= current_time, Request.server_name==ServerName, Request.port==local_port).count()
+        return count
+    except Exception as e:
+        print(e)
+        raise HTTPException(status_code=500, detail="Internal Server Error")
     finally:
         db.close()
 
