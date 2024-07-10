@@ -21,7 +21,7 @@ from sqlalchemy import create_engine, Column, Integer, String
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
 from datetime import datetime, timedelta  # Thêm timedelta vào import
-from sqlalchemy import func
+from sqlalchemy import func, distinct
 from sqlalchemy import and_
 from sqlalchemy import or_
 from sqlalchemy.sql import text, func
@@ -176,7 +176,8 @@ def get_log(number: int = 10, page: int = 1, distinct: int = 0, filters: str = N
     finally:
         db.close()
 
-@app.get("/count_request", tags=["logs"])
+@app.get("/count_request", tags=["logs"],
+         description="This API fetches the number of requests within a specified time frame.")
 def count_request(time:int):
     db = SessionLocal()
     try:
@@ -189,7 +190,8 @@ def count_request(time:int):
         raise HTTPException(status_code=500, detail="Internal Server Error")
     finally:
         db.close()
-@app.get("/count_request_by_servername", tags=["logs"])
+@app.get("/count_request_by_servername", tags=["logs"],
+         description="This API fetches the number of requests within a specified time frame for a specific agent.")
 def count_request(time:int, local_port: str = None, ServerName: str = None):
     db = SessionLocal()
     try:
@@ -203,7 +205,8 @@ def count_request(time:int, local_port: str = None, ServerName: str = None):
     finally:
         db.close()
 
-@app.get("/get_log_xlsx", tags=["logs"])
+@app.get("/get_log_xlsx", tags=["logs"],
+         description="This API fetches logs and returns them as an Excel file.")
 def get_log_xlsx():
     db = SessionLocal()
     try:
@@ -241,7 +244,8 @@ def get_log_xlsx():
     finally:
         db.close()
 
-@app.get("/getLogWithinTime", tags=["logs"])
+@app.get("/getLogWithinTime", tags=["logs"],
+         description="This API fetches logs within a specified time frame.")
 def get_log_within_time(time: int, number: int = 10, page: int = 1,
     src_ip: str = None, local_port: str = None, ServerName: str = None, filters: str = None):
     try:
@@ -309,7 +313,8 @@ def get_log_within_time(time: int, number: int = 10, page: int = 1,
         db.close()
 
 
-@app.get("/get_log_within_time_xlsx", tags=["logs"])
+@app.get("/get_log_within_time_xlsx", tags=["logs"],
+         description="This API fetches logs within a specified time frame and returns them as an Excel file.")
 def get_log_within_time_xlsx(
     time: int, src_ip: str = None, local_port: str = None, ServerName: str = None, filters: str = None):
     db = SessionLocal()
@@ -357,7 +362,8 @@ def get_log_within_time_xlsx(
         db.close()
 
 #get IP of attacker within time
-@app.get("/getIPattackerWithinTime", tags=["logs"])
+@app.get("/getIPattackerWithinTime", tags=["logs"],
+         description="This API fetches IP addresses of attackers within a specified time frame.")
 def get_IP_attacker_within_time(time: int, number: int = 10, page: int = 1, distinct: int = 0, filters: str = None):
     try:
         db = SessionLocal()
@@ -385,7 +391,8 @@ def get_IP_attacker_within_time(time: int, number: int = 10, page: int = 1, dist
     finally:
         db.close()
 
-@app.get("/count_IP_attacker_within_time_by_ID", tags=["logs"])
+@app.get("/count_IP_attacker_within_time_by_ID", tags=["logs"],
+         description="This API fetches the number of distinct IP addresses that have attacked within a specified time frame for a specific agent.")
 def count_IP_attacker_within_time_by_ID(id: int, time: int):
     try:
         db = SessionLocal()
@@ -411,7 +418,8 @@ def count_IP_attacker_within_time_by_ID(id: int, time: int):
     finally:
         db.close()
 
-@app.get("/get_Attacks_Map", tags=["logs"])
+@app.get("/get_Attacks_Map", tags=["logs"],
+         description="This API fetches the locations of the most recent attacks.")
 def get_Attacks_Map():
     db = SessionLocal()
     geoip_reader = Reader('/home/kali/Desktop/WAF/db/GeoLite2-City.mmdb')    
@@ -444,7 +452,8 @@ def get_Attacks_Map():
         db.close()
 
 #get attack map theo IP
-@app.get("/getAttackMapIP", tags=["logs"])
+@app.get("/getAttackMapIP", tags=["logs"],
+         description="This API fetches the location of a specific IP address.")
 def get_attack_map_ip(ip: str):
     geoip_reader = Reader('/home/kali/Desktop/WAF/db/GeoLite2-City.mmdb')
 
@@ -473,7 +482,8 @@ def get_attack_map_ip(ip: str):
         geoip_reader.close()
 
 # get the number of times d in a period
-@app.get("/getDetectedTimes", tags=["logs"])
+@app.get("/getDetectedTimes", tags=["logs"],
+         description="This API fetches the number of times an attack has been detected within a specified time frame.")
 def get_detected_times(time:int):
     try:
         db = SessionLocal()
@@ -491,7 +501,8 @@ def get_detected_times(time:int):
     finally:
         db.close()
 
-@app.get("/getDetectedTimesByID", tags=["logs"])
+@app.get("/getDetectedTimesByID", tags=["logs"],
+         description="This API fetches the number of times an attack has been detected within a specified time frame for a specific agent.")
 def get_detected_times_byID(time: int, id: int):
     try:
         db = SessionLocal()
@@ -518,7 +529,42 @@ def get_detected_times_byID(time: int, id: int):
         db.close()
 
 #Graph
-@app.get("/graph_count_log_within_24h", tags=["logs"])
+@app.get("/get_severity", tags=["logs"],
+         description="This API fetches the severity of attacks for each agent.")
+def get_severity():
+    db = SessionLocal()
+    try:
+        join_condition = or_(
+            (ModsecHost.Port.in_([80, 443]) & (ModsecHost.ServerName == ModsecLog1.request_host)),
+            ((ModsecHost.Port.notin_([80, 443])) & ((ModsecHost.ServerName + ":" + ModsecHost.Port.cast(String)) == ModsecLog1.request_host))
+        )
+        query = db.query(
+            ModsecHost.ServerName,
+            ModsecHost.Port,
+            ModsecLog1.message_severity,
+            func.count(ModsecLog1.id)
+        ).join(
+            ModsecHost, join_condition
+        ).group_by(
+            ModsecHost.ServerName,
+            ModsecHost.Port,
+            ModsecLog1.message_severity
+        )
+        
+        results = query.all()
+        list_result = [
+            {"host": host, "port": port, "severity": severity, "count": count}
+            for host, port, severity, count in results
+        ]
+        return list_result
+    except Exception as e:
+        print(e)
+        raise HTTPException(status_code=500, detail="Internal Server Error")
+    finally:
+        db.close()
+
+@app.get("/graph_count_log_within_24h", tags=["logs"],
+         description="This API is used to count the number of blocked requests per time interval.")
 def graph_count_log_within_24h():
     # Tạo kết nối database
     db = SessionLocal()
@@ -533,15 +579,19 @@ def graph_count_log_within_24h():
             period_start = start_time + timedelta(hours=i*3)
             period_end = start_time + timedelta(hours=(i+1)*3)
 
-            count = db.query(func.count(ModsecLog1.id)).filter(
+            total_count = db.query(func.count(Request.id)).filter(
+                Request.datetime_request >= period_start,
+                Request.datetime_request < period_end
+            ).scalar()
+            malicious_count = db.query(func.count(distinct(ModsecLog1.request_line))).filter(
                 ModsecLog1.event_time >= period_start,
                 ModsecLog1.event_time < period_end
             ).scalar()
-
-            # Thêm kết quả vào danh sách
+            # Add results to the list
             list_result.append({
                 "time": f"{period_start.strftime('%H.%M')}-{period_end.strftime('%H.%M')}",
-                "number_of_prevented": count
+                "number_of_prevented": malicious_count,
+                "total_requests": total_count,
             })
 
         return list_result
@@ -552,7 +602,8 @@ def graph_count_log_within_24h():
     finally:
         db.close()
 
-@app.get("/graph_count_log_within_24h_byID", tags=["logs"])
+@app.get("/graph_count_log_within_24h_byID", tags=["logs"],
+         description="This API is used to count the number of blocked requests per time interval for a specific agent.")
 def graph_count_log_within_24h_byID(id:int):
     # Tạo kết nối database
     db = SessionLocal()
@@ -595,7 +646,8 @@ def graph_count_log_within_24h_byID(id:int):
     finally:
         db.close()
 
-@app.get("/grap_TOP10_IP_source_addresses_json", tags=["logs"])
+@app.get("/grap_TOP10_IP_source_addresses_json", tags=["logs"],
+         description="This API fetches the top 10 source IP addresses.")
 def grap_TOP10_IP_source_addresses_json():
     db = SessionLocal()
     try:
@@ -617,7 +669,8 @@ def grap_TOP10_IP_source_addresses_json():
     finally:
         db.close()
 
-@app.get("/graph-top20-rule-hit", tags=["logs"])
+@app.get("/graph-top20-rule-hit", tags=["logs"],
+         description="This API fetches the top 20 rules that have been hit the most.")
 def graph_top20_rule_hit():
     db = SessionLocal()
     try:
@@ -670,7 +723,8 @@ def graph_top20_rule_hit():
     finally:
         db.close()
 
-@app.get("/graph_TOP10_Attacks_intercepted", tags=["logs"])
+@app.get("/graph_TOP10_Attacks_intercepted", tags=["logs"],
+         description="This API fetches the top 10 attacks intercepted.")
 def graph_TOP10_Attacks_intercepted():
     db = SessionLocal()
     try:
@@ -701,7 +755,8 @@ def graph_TOP10_Attacks_intercepted():
     finally:
         db.close()
 
-@app.get("/graph_Passed_and_Intercepted", tags=["logs"])
+@app.get("/graph_Passed_and_Intercepted", tags=["logs"],
+         description="This API fetches the number of requests that have passed and been intercepted.")
 def graph_Passed_and_Intercepted(
         time_start: Optional[datetime] = Query(
             None, 
@@ -767,7 +822,8 @@ def graph_Passed_and_Intercepted(
 
 #RULE  
 
-@app.get("/get_rule", tags=["rules"])
+@app.get("/get_rule_each_agent", tags=["rules"],
+          description="This API fetches rules for each agent.")
 def get_rule_custom(ServerName: str, Port: int):
     rule_file_path = f'/etc/modsecurity/custom_rules/{ServerName}_{Port}_rules.conf'
     try:
@@ -780,11 +836,13 @@ def get_rule_custom(ServerName: str, Port: int):
 #update rule custom
 class RuleModel(BaseModel):
     ServerName: str
+    Port: str
     rules: str
-@app.post("/updaterule", tags=["rules"])
+@app.post("/update_rule_each_agent", tags=["rules"],
+          description="Update rules for each agent.")
 async def update_rule_custom(ruleModel: RuleModel):
 
-    rule_file_path = f'/etc/modsecurity/custom_rules/{ruleModel.ServerName}_rules.conf'
+    rule_file_path = f'/etc/modsecurity/custom_rules/{ruleModel.ServerName}_{ruleModel.Port}_rules.conf'
     rules = ruleModel.rules
     
     try:
@@ -796,7 +854,118 @@ async def update_rule_custom(ruleModel: RuleModel):
         raise HTTPException(status_code=500, detail=f"Failed to reload Apache: {e}")
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to update ModSecurity rule file: {e}")
+@app.get("/get_rule_file", tags=["rules"],
+         description="The API retrieves the created rule files for all.")
+def get_rule_file():
+    try:
+        rule_files = []
+        rule_files_path = '/etc/modsecurity/custom_rule_all'
+        for file in os.listdir(rule_files_path):
+            if file.endswith(".conf"):
+                file_path = os.path.join(rule_files_path, file)
+                creation_time = os.path.getctime(file_path)
+                modification_time = os.path.getmtime(file_path)
+                rule_files.append({
+                    "file_name": file,
+                    "creation_date": datetime.fromtimestamp(creation_time).strftime('%Y-%m-%d %H:%M:%S'),
+                    "modification_date": datetime.fromtimestamp(modification_time).strftime('%Y-%m-%d %H:%M:%S')
+                })
+        return rule_files
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to read ModSecurity rule files: {e}")
+    
+@app.post("/create_rule_file", tags=["rules"],
+          description="Create a rule file for all agents.")
+def create_rule_file(rule_name: str):
+    rule_file_path = f'/etc/modsecurity/custom_rule_all/{rule_name}.conf'
+    try:
+        with open(rule_file_path, 'w') as f:
+            f.write("# Rule file for all agents\n")
+        subprocess.run(["sudo", "systemctl", "reload", "apache2"], check=True)
+        return {"message": f"Rule file {rule_name}.conf created successfully."}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to create ModSecurity rule file: {e}")
 
+@app.delete("/delete_rule_file", tags=["rules"],
+            description="Delete a rule file for all agents.")
+def delete_rule_file(rule_name: str):
+    rule_file_path = f'/etc/modsecurity/custom_rule_all/{rule_name}.conf'
+    try:
+        os.remove(rule_file_path)
+        subprocess.run(["sudo", "systemctl", "reload", "apache2"], check=True)
+        return {"message": f"Rule file {rule_name}.conf deleted successfully."}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to delete ModSecurity rule file: {e}")
+
+@app.get("/get_rule_file_content", tags=["rules"],
+            description="The API retrieves the content of a rule file for all agents.")
+def get_rule_file_content(rule_name: str):
+    rule_file_path = f'/etc/modsecurity/custom_rule_all/{rule_name}.conf'
+    try:
+        with open(rule_file_path, 'r') as file:
+            content = file.read()
+            return Response(content=content, media_type="text/plain")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to read ModSecurity rule file: {e}")
+    
+class RuleAllModel(BaseModel):
+    name: str
+    rules: str
+@app.post("/update_rule_file_content", tags=["rules"],
+          description="Update the content of a rule file for all agents.")
+async def update_rule_custom(ruleModel: RuleAllModel):
+    rule_file_path = f'/etc/modsecurity/custom_rule_all/{ruleModel.name}.conf'
+    rules = ruleModel.rules
+    try:
+        with open(rule_file_path, 'w') as f:
+            f.write(rules)
+        subprocess.run(["sudo", "systemctl", "reload", "apache2"], check=True)
+        return {"message": f"Rule file {ruleModel.name}.conf updated and Apache reloaded successfully."}
+    except subprocess.CalledProcessError as e:
+        raise HTTPException(status_code=500, detail=f"Failed to reload Apache: {e}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to update ModSecurity rule file: {e}")
+
+@app.get("/get_blacklist", tags=["rules"],
+         description="Get the list of IP addresses in the blacklist.")
+def get_blacklist():
+    blacklist_path = '/etc/modsecurity/custom_rule_all/blacklist.txt'
+    try:
+        with open(blacklist_path, 'r') as file:
+            blacklist = file.readlines()
+        # Trả về danh sách dưới dạng JSON
+        return {"blacklist": [ip.strip() for ip in blacklist]}
+    except Exception as e:
+        return {"error": str(e)}
+
+@app.post("/add_ip_to_blacklist", tags=["rules"],
+          description="Add an IP address to the blacklist.")
+def add_IP_into_blacklist(ip_address: str):
+    blacklist_path = '/etc/modsecurity/custom_rule_all/blacklist.txt'
+    try:
+        with open(blacklist_path, 'a') as file:
+            file.write(f"{ip_address}\n")
+        subprocess.run(["sudo", "systemctl", "reload", "apache2"], check=True)
+        return {"message": f"IP address {ip_address} added to the blacklist successfully."}
+    except Exception as e:
+        return {"error": str(e)}
+    
+@app.delete("/delete_ip_from_blacklist", tags=["rules"],
+            description="Delete IP address from blacklist")
+def delete_ip_from_blacklist(ip_address: str):
+    blacklist_path = '/etc/modsecurity/custom_rule_all/blacklist.txt'
+    try:
+        with open(blacklist_path, 'r') as file:
+            lines = file.readlines()
+        with open(blacklist_path, 'w') as file:
+            for line in lines:
+                if line.strip() != ip_address:
+                    file.write(line)
+        subprocess.run(["sudo", "systemctl", "reload", "apache2"], check=True)
+        return {"message": f"IP address {ip_address} deleted from the blacklist successfully."}
+    except Exception as e:
+        return {"error": str(e)}
+    
 @app.get("/update_crs", tags=["rules"])
 async def update_crs():
     try:
@@ -1293,7 +1462,9 @@ def update_mode_agent(ServerName: str, Port: int, mode: str):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to update ModSecurity configuration: {str(e)}")     
 
-@app.get("/get_mode_AI_CNN", tags=["config"])
+@app.get("/get_mode_AI_CNN", tags=["config"],
+             description="This endpoint returns the mode of the AI CNN configuration by checking the 'security2.conf' file. If the 'IncludeOptional /etc/modsecurity/ruleAI/CNN.conf' line is commented out, the mode is 'Off'. Otherwise, the mode is 'On'.",
+)
 def get_mode_AI_CNN():
     security_conf_path = "/etc/apache2/mods-enabled/security2.conf"
     try:
