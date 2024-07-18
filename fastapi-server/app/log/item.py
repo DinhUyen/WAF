@@ -58,7 +58,8 @@ def get_log(number: int = 10, page: int = 1, distinct: int = 0, filters: str = N
                 "response_status": response_status_value,
                 "action": action_value,
                 "message_msg": log.message_msg,
-                "message_rule_id": log.message_rule_id                
+                "message_rule_id": log.message_rule_id,
+                "message_rule_file": log.message_rule_file                
             })
         return list_result
     except Exception as e:
@@ -181,7 +182,8 @@ def get_log_within_time(time: int, number: int = 10, page: int = 1,
                 "response_status": response_status_value,
                 "action": action_value,
                 "message_msg": log.message_msg,
-                "message_rule_id": log.message_rule_id                
+                "message_rule_id": log.message_rule_id,
+                "message_rule_file": log.message_rule_file                
             })
         log_response = {
             "total": total_records,
