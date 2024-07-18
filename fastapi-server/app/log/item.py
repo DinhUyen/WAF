@@ -431,10 +431,29 @@ def get_severity(db: Session = Depends(get_db)):
         )
         
         results = query.all()
-        list_result = [
-            {"host": host, "port": port, "severity": severity, "count": count}
-            for host, port, severity, count in results
-        ]
+        severity_dict = {}
+        for host, port, severity, count in results:
+            key = (host, port)
+            if key not in severity_dict:
+                severity_dict[key] = {
+                    "host": host,
+                    "port": port,
+                    "CRITICAL": 0,
+                    "HIGH": 0,
+                    "MEDIUM": 0,
+                    "ERROR": 0
+                }
+            if severity.upper() == "CRITICAL":
+                severity_dict[key]["CRITICAL"] += count
+            elif severity.upper() == "HIGH":
+                severity_dict[key]["HIGH"] += count
+            elif severity.upper() == "MEDIUM":
+                severity_dict[key]["MEDIUM"] += count
+            elif severity.upper() == "ERROR":
+                severity_dict[key]["ERROR"] += count
+        
+        list_result = list(severity_dict.values())
+        
         return list_result
     except Exception as e:
         print(e)
