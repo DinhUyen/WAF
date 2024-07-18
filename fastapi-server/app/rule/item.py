@@ -7,6 +7,7 @@ import os
 from datetime import datetime
 from sqlalchemy.orm import Session
 from starlette.responses import Response
+from typing import List, Dict, Any
 from models.item import  RuleModel, RuleAllModel, Rule_Remove
 from fastapi import APIRouter, Depends, HTTPException, Query
 from database import get_db
@@ -48,8 +49,13 @@ async def update_rule_custom(ruleModel: RuleModel):
         raise HTTPException(status_code=500, detail=f"Failed to update ModSecurity rule file: {e}")
 @router.get("/get_rule_file", 
          description="The API retrieves the created rule files for all.")
-def get_rule_file():
+def get_rule_file(page: int = Query(1),
+                  page_size: int = Query(10)) -> Dict[str, Any]:
     try:
+        if page < 1:
+            raise HTTPException(status_code=400, detail="Page number must be 1 or greater")
+        if page_size < 1:
+            raise HTTPException(status_code=400, detail="Page size must be 1 or greater")
         rule_files = []
         rule_files_path = '/etc/modsecurity/custom_rule_all'
         for file in os.listdir(rule_files_path):
@@ -62,7 +68,21 @@ def get_rule_file():
                     "creation_date": datetime.fromtimestamp(creation_time).strftime('%Y-%m-%d %H:%M:%S'),
                     "modification_date": datetime.fromtimestamp(modification_time).strftime('%Y-%m-%d %H:%M:%S')
                 })
-        return rule_files
+        total_records = len(rule_files)
+        start_index = (page - 1) * page_size
+        end_index = start_index + page_size
+        if start_index >= total_records:
+            raise HTTPException(status_code=404, detail="Page number out of range")
+        paginated_rule_files = rule_files[start_index:end_index]
+        total_pages = (total_records + page_size - 1) // page_size
+        response = {
+            "total": total_records,
+            "data": paginated_rule_files,
+            "limit": page_size,
+            "page": page,
+            "total_pages": total_pages
+        }
+        return response
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to read ModSecurity rule files: {e}")
     
@@ -116,7 +136,7 @@ async def update_rule_custom(ruleModel: RuleAllModel):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to update ModSecurity rule file: {e}")
 @router.get("/get_blacklist", description="Get the list of IP addresses in the blacklist.")
-def get_blacklist(page: int = Query(1, ge=1), page_size: int = Query(10, ge=1, le=100)):
+def get_blacklist(page: int = Query(1, ge=1), page_size: int = Query(10, ge=1, le=100)) -> Dict[str, Any]:
     blacklist_path = '/etc/modsecurity/custom_rule_all/blacklist.txt'
     try:
         with open(blacklist_path, 'r') as file:
@@ -131,15 +151,16 @@ def get_blacklist(page: int = Query(1, ge=1), page_size: int = Query(10, ge=1, l
         
         paginated_blacklist = blacklist[start:end]
         
-        return {
+        response = {
+            "total": total_items,
+            "data": paginated_blacklist,
+            "limit": page_size,
             "page": page,
-            "page_size": page_size,
-            "total_items": total_items,
-            "total_pages": (total_items + page_size - 1) // page_size,  # Tính tổng số trang
-            "blacklist": paginated_blacklist
+            "total_pages": (total_items + page_size - 1) // page_size
         }
+        return response
     except Exception as e:
-        return {"error": str(e)}
+        raise HTTPException(status_code=500, detail=f"Failed to read blacklist file: {e}")
 
 @router.post("/add_ip_to_blacklist", 
           description="Add an IP address to the blacklist.")
@@ -213,11 +234,23 @@ def get_content_rule(rule_file: str, id_rule: str):
 #     servername TEXT NOT NULL,
 #     port TEXT NOT NULL
 # );
-@router.get("/get_deleted_IDRule",
-            description="This API get deleted rule applies to all")
-def get_deleted_IDRule(db: Session = Depends(get_db)):
+@router.get("/get_deleted_ID_Rule",
+            description="This API gets deleted rule applies")
+def get_deleted_ID_Rule(ServerName: str = None, port: int = None,
+                        db: Session = Depends(get_db),
+                        page: int = Query(1),
+                        page_size: int = Query(10)) -> Dict[str, Any]:
     try:
-        rule_removes = db.query(Rule_Remove).all()
+        if page < 1:
+            raise HTTPException(status_code=400, detail="Page number must be 1 or greater")
+        if page_size < 1:
+            raise HTTPException(status_code=400, detail="Page size must be 1 or greater")
+        skip = (page - 1) * page_size
+        query = db.query(Rule_Remove)
+        if ServerName and port:
+            query = query.filter(Rule_Remove.servername == ServerName, Rule_Remove.port == port)        
+        total_records = query.count()
+        rule_removes = query.offset(skip).limit(page_size).all()
         result_list = []
         for rule_remove in rule_removes:
             result_list.append({
@@ -225,10 +258,18 @@ def get_deleted_IDRule(db: Session = Depends(get_db)):
                 "rule_file": rule_remove.rule_file,
                 "servername": rule_remove.servername,
                 "port": rule_remove.port
-            })
-        return result_list
+            })        
+        total_pages = (total_records + page_size - 1) // page_size        
+        response = {
+            "total": total_records,
+            "data": result_list,
+            "limit": page_size,
+            "page": page,
+            "total_pages": total_pages
+        }
+        return response
     except Exception as e:
-        return f"Failed to read rule file: {e}"
+        raise HTTPException(status_code=500, detail=f"Failed to read rule file: {e}")
     
 @router.delete("remote_rule_CRS",
                 description="This API remove rule from CRS")
@@ -268,7 +309,7 @@ def remote_rule_CRS(id_rule:str, rule_file:str, db: Session = Depends(get_db)):
         return f"Failed to add rule ID {id_rule} to SecRuleRemoveById: {e}"
         
 @router.post("/add_rule_CRS",
-            description="This API add rule to CRS from removed rule")
+            description="This API restore rule to CRS from removed rule")
 def add_rule_CRS(id_rule:str, db: Session = Depends(get_db)):
     security_config_path= '/etc/apache2/mods-enabled/security2.conf'
     try:
@@ -302,24 +343,6 @@ def add_rule_CRS(id_rule:str, db: Session = Depends(get_db)):
         return f"Rule ID {id_rule} removed from SecRuleRemoveById."
     except Exception as e:
         return f"Failed to remove rule ID {id_rule} from SecRuleRemoveById: {e}"
-
-@router.get("/get_deleted_IDRule_each_agent",
-            description="This API get deleted rule applies to get each agent")
-def get_deleted_IDRule_each_agent(ServerName: str, Port: int, db: Session = Depends(get_db)):
-    try:
-        rule_removes = db.query(Rule_Remove).filter(Rule_Remove.servername == ServerName, Rule_Remove.port == Port).all()
-        result_list = []
-        for rule_remove in rule_removes:
-            result_list.append({
-                "id_rule": rule_remove.id_rule,
-                "rule_file": rule_remove.rule_file,
-                "servername": rule_remove.servername,
-                "port": rule_remove.port
-            })
-        return result_list
-    except Exception as e:
-        return f"Failed to read rule file: {e}"
-
 
 @router.delete("/delete_rule_CRS_each_agent",
                description="This API delete rule from CRS applies to get each agent")
@@ -359,7 +382,7 @@ def delete_rule_CRS_each_agent(id_rule:str, rule_file: str, ServerName: str, Por
         return f"Failed to add rule ID {id_rule} to SecRuleRemoveById: {e}"
     
 @router.post("/add_rule_CRS_each_agent",
-             description="This API add rule to CRS applies to get each agent")
+             description="This API restore rule to CRS applies to get each agent")
 def add_rule_CRS_each_agent(id_rule:str, ServerName: str, Port: int, db: Session = Depends(get_db)):
     rule_file_path = f'/etc/apache2/sites-available/{ServerName}_{Port}.conf'
     try:
