@@ -8,7 +8,7 @@ from datetime import datetime
 from sqlalchemy.orm import Session
 from starlette.responses import Response
 from models.item import  RuleModel, RuleAllModel, Rule_Remove
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from database import get_db
 
 router = APIRouter(
@@ -115,16 +115,29 @@ async def update_rule_custom(ruleModel: RuleAllModel):
         raise HTTPException(status_code=500, detail=f"Failed to reload Apache: {e}")
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to update ModSecurity rule file: {e}")
-
-@router.get("/get_blacklist", 
-         description="Get the list of IP addresses in the blacklist.")
-def get_blacklist():
+@router.get("/get_blacklist", description="Get the list of IP addresses in the blacklist.")
+def get_blacklist(page: int = Query(1, ge=1), page_size: int = Query(10, ge=1, le=100)):
     blacklist_path = '/etc/modsecurity/custom_rule_all/blacklist.txt'
     try:
         with open(blacklist_path, 'r') as file:
-            blacklist = file.readlines()
-        # Trả về danh sách dưới dạng JSON
-        return {"blacklist": [ip.strip() for ip in blacklist]}
+            blacklist = [ip.strip() for ip in file.readlines()]
+        
+        total_items = len(blacklist)
+        start = (page - 1) * page_size
+        end = start + page_size
+        
+        if start >= total_items:
+            raise HTTPException(status_code=404, detail="Page not found")
+        
+        paginated_blacklist = blacklist[start:end]
+        
+        return {
+            "page": page,
+            "page_size": page_size,
+            "total_items": total_items,
+            "total_pages": (total_items + page_size - 1) // page_size,  # Tính tổng số trang
+            "blacklist": paginated_blacklist
+        }
     except Exception as e:
         return {"error": str(e)}
 
