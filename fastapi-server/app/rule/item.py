@@ -86,18 +86,20 @@ def get_rule_file(page: int = Query(1),
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to read ModSecurity rule files: {e}")
     
-@router.post("/create_rule_file", 
-          description="Create a rule file for all agents.")
-def create_rule_file(rule_name: str):
-    rule_file_path = f'/etc/modsecurity/custom_rule_all/{rule_name}.conf'
+@router.post("/create_rule_file", description="Create and update a rule file for all agents.")
+async def create_rule_file(rule: RuleAllModel):
+    rule_file_path = f'/etc/modsecurity/custom_rule_all/{rule.name}.conf'
     try:
         with open(rule_file_path, 'w') as f:
             f.write("# Rule file for all agents\n")
+            f.write(rule.rules)
         subprocess.run(["sudo", "systemctl", "reload", "apache2"], check=True)
-        return {"message": f"Rule file {rule_name}.conf created successfully."}
+        return {"message": f"Rule file {rule.name}.conf created and updated successfully."}
+    except subprocess.CalledProcessError as e:
+        raise HTTPException(status_code=500, detail=f"Failed to reload Apache: {e}")
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to create ModSecurity rule file: {e}")
-
+        raise HTTPException(status_code=500, detail=f"Failed to create or update ModSecurity rule file: {e}")
+    
 @router.delete("/delete_rule_file", 
             description="Delete a rule file for all agents.")
 def delete_rule_file(rule_name: str):
@@ -137,7 +139,7 @@ async def update_rule_custom(ruleModel: RuleAllModel):
         raise HTTPException(status_code=500, detail=f"Failed to update ModSecurity rule file: {e}")
 @router.get("/get_blacklist", description="Get the list of IP addresses in the blacklist.")
 def get_blacklist(page: int = Query(1, ge=1), page_size: int = Query(10, ge=1, le=100)) -> Dict[str, Any]:
-    blacklist_path = '/etc/modsecurity/custom_rule_all/blacklist.txt'
+    blacklist_path = '/etc/modsecurity/custom_rule_conf/blacklist.txt'
     try:
         with open(blacklist_path, 'r') as file:
             blacklist = [ip.strip() for ip in file.readlines()]
@@ -165,7 +167,7 @@ def get_blacklist(page: int = Query(1, ge=1), page_size: int = Query(10, ge=1, l
 @router.post("/add_ip_to_blacklist", 
           description="Add an IP address to the blacklist.")
 def add_IP_into_blacklist(ip_address: str):
-    blacklist_path = '/etc/modsecurity/custom_rule_all/blacklist.txt'
+    blacklist_path = '/etc/modsecurity/custom_rule_conf/blacklist.txt'
     try:
         with open(blacklist_path, 'a') as file:
             file.write(f"{ip_address}\n")
@@ -177,7 +179,7 @@ def add_IP_into_blacklist(ip_address: str):
 @router.delete("/delete_ip_from_blacklist", 
             description="Delete IP address from blacklist")
 def delete_ip_from_blacklist(ip_address: str):
-    blacklist_path = '/etc/modsecurity/custom_rule_all/blacklist.txt'
+    blacklist_path = '/etc/modsecurity/custom_rule_conf/blacklist.txt'
     try:
         with open(blacklist_path, 'r') as file:
             lines = file.readlines()
@@ -228,12 +230,6 @@ def get_content_rule(rule_file: str, id_rule: str):
         raise HTTPException(status_code=404, detail=f"Rule file {rule_file} not found.")
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to read rule file {rule_file}: {e}")
-# CREATE TABLE rule_remove (
-#     id_rule TEXT NOT NULL,
-#     rule_file TEXT NOT NULL,
-#     servername TEXT NOT NULL,
-#     port TEXT NOT NULL
-# );
 @router.get("/get_deleted_ID_Rule",
             description="This API gets deleted rule applies")
 def get_deleted_ID_Rule(ServerName: str = None, port: int = None,
@@ -271,7 +267,7 @@ def get_deleted_ID_Rule(ServerName: str = None, port: int = None,
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to read rule file: {e}")
     
-@router.delete("remote_rule_CRS",
+@router.delete("/remote_rule_CRS",
                 description="This API remove rule from CRS")
 def remote_rule_CRS(id_rule:str, rule_file:str, db: Session = Depends(get_db)):
     security_config_path= '/etc/apache2/mods-enabled/security2.conf'
