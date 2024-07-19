@@ -85,10 +85,7 @@ def get_rule_file(page: int = Query(1),
         return response
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to read ModSecurity rule files: {e}")
-
-class RuleAllModel(BaseModel):
-    name: str
-    rules: str    
+    
 @router.post("/create_rule_file", description="Create and update a rule file for all agents.")
 async def create_rule_file(rule: RuleAllModel):
     rule_file_path = f'/etc/modsecurity/custom_rule_all/{rule.name}.conf'
