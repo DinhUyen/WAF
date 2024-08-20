@@ -11,7 +11,6 @@ from typing import List, Dict, Any
 from models.item import  RuleModel, RuleAllModel, Rule_Remove
 from fastapi import APIRouter, Depends, HTTPException, Query
 from database import get_db
-
 router = APIRouter(
     prefix="/rule",
     tags=["rule"],
@@ -126,20 +125,27 @@ def get_rule_file_content(rule_name: str):
 @router.post("/update_rule_file_content", 
           description="Update the content of a rule file for all agents.")
 async def update_rule_custom(ruleModel: RuleAllModel):
-    rule_file_path = f'/etc/modsecurity/custom_rule_all/{ruleModel.name}.conf'
+    restricted_files = ['clamscan', 'blacklistIP']
+    rule_file_name = ruleModel.name
+
+    # Kiểm tra nếu tên file nằm trong danh sách cấm
+    if rule_file_name in restricted_files:
+        raise HTTPException(status_code=403, detail=f"Modification of {rule_file_name}.conf is not allowed.")
+
+    rule_file_path = f'/etc/modsecurity/custom_rule_all/{rule_file_name}.conf'
     rules = ruleModel.rules
     try:
         with open(rule_file_path, 'w') as f:
             f.write(rules)
         subprocess.run(["sudo", "systemctl", "reload", "apache2"], check=True)
-        return {"message": f"Rule file {ruleModel.name}.conf updated and Apache reloaded successfully."}
+        return {"message": f"Rule file {rule_file_name}.conf updated and Apache reloaded successfully."}
     except subprocess.CalledProcessError as e:
         raise HTTPException(status_code=500, detail=f"Failed to reload Apache: {e}")
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to update ModSecurity rule file: {e}")
 @router.get("/get_blacklist", description="Get the list of IP addresses in the blacklist.")
 def get_blacklist(page: int = Query(1, ge=1), page_size: int = Query(10, ge=1, le=100)) -> Dict[str, Any]:
-    blacklist_path = '/etc/modsecurity/custom_rule_conf/blacklist.txt'
+    blacklist_path = '/etc/modsecurity/custom_rule_all/blacklist.txt'
     try:
         with open(blacklist_path, 'r') as file:
             blacklist = [ip.strip() for ip in file.readlines()]
@@ -167,7 +173,7 @@ def get_blacklist(page: int = Query(1, ge=1), page_size: int = Query(10, ge=1, l
 @router.post("/add_ip_to_blacklist", 
           description="Add an IP address to the blacklist.")
 def add_IP_into_blacklist(ip_address: str):
-    blacklist_path = '/etc/modsecurity/custom_rule_conf/blacklist.txt'
+    blacklist_path = '/etc/modsecurity/custom_rule_all/blacklist.txt'
     try:
         with open(blacklist_path, 'a') as file:
             file.write(f"{ip_address}\n")
@@ -179,7 +185,7 @@ def add_IP_into_blacklist(ip_address: str):
 @router.delete("/delete_ip_from_blacklist", 
             description="Delete IP address from blacklist")
 def delete_ip_from_blacklist(ip_address: str):
-    blacklist_path = '/etc/modsecurity/custom_rule_conf/blacklist.txt'
+    blacklist_path = '/etc/modsecurity/custom_rule_all/blacklist.txt'
     try:
         with open(blacklist_path, 'r') as file:
             lines = file.readlines()
@@ -191,7 +197,76 @@ def delete_ip_from_blacklist(ip_address: str):
         return {"message": f"IP address {ip_address} deleted from the blacklist successfully."}
     except Exception as e:
         return {"error": str(e)}
-    
+
+
+def read_countries(file_path: str) -> List[str]:
+    with open(file_path, 'r') as file:
+        return [line.strip() for line in file.readlines()]
+
+def write_countries(file_path: str, countries: List[str]):
+    with open(file_path, 'w') as file:
+        file.write('\n'.join(countries))
+
+@router.get("/get_blocked_countries",
+            description="This API gets the list of blocked countries.")
+def get_blocked_countries(page: int = Query(1),
+                          page_size: int = Query(10)):
+    BLOCKED_FILE = '/etc/modsecurity/custom_rule_all/blocked_countries.txt'
+    blocked_countries = read_countries(BLOCKED_FILE)
+    start = (page - 1) * page_size
+    end = start + page_size
+    paginated_countries = blocked_countries[start:end]
+    response = {
+        "total": len(blocked_countries),
+        "data": paginated_countries,
+        "limit": page_size,
+        "page": page,
+        "total_pages": (len(blocked_countries) + page_size - 1) // page_size  # Calculate total pages
+    }    
+    return response
+
+@router.post("/add_Geo-BlockIP",
+            description="This API blocks traffic based on geographic location to mitigate threats from specific regions")
+def add_Geo_BlockIP(country_codes: List[str]):
+    BLOCKED_FILE = '/etc/modsecurity/custom_rule_all/blocked_countries.txt'
+    blocked_countries = read_countries(BLOCKED_FILE)
+    newly_blocked = []
+
+    for country_code in country_codes:
+        if country_code in blocked_countries:
+            continue  # Skip if the country is already blocked
+        blocked_countries.append(country_code)
+        newly_blocked.append(country_code)
+
+    if not newly_blocked:
+        raise HTTPException(status_code=400, detail="All provided country codes are already in the blocked list.")
+    write_countries(BLOCKED_FILE, blocked_countries)
+    try:
+        subprocess.run(["sudo", "systemctl", "reload", "apache2"], check=True)
+    except Exception as e:
+        return {"status": "failed", "error": str(e)} 
+    return {"status": "success", "blocked_countries": newly_blocked}
+
+@router.delete("/remove_Geo-BlockIP",
+            description="This API removes a country from the blocked list.")
+def remove_Geo_BlockIP(country_codes: List[str]):
+    BLOCKED_FILE = '/etc/modsecurity/custom_rule_all/blocked_countries.txt'
+    blocked_countries = read_countries(BLOCKED_FILE)
+    removed_countries = []
+    for country_code in country_codes:
+        if country_code not in blocked_countries:
+            continue  # Skip if the country is not in the blocked list
+        blocked_countries.remove(country_code)
+        removed_countries.append(country_code)
+    if not removed_countries:
+        raise HTTPException(status_code=400, detail="None of the provided country codes are in the blocked list.")
+    write_countries(BLOCKED_FILE, blocked_countries)   
+    try:
+        subprocess.run(["sudo", "systemctl", "reload", "apache2"], check=True)
+    except Exception as e:
+        return {"status": "failed", "error": str(e)}
+    return {"status": "success", "unblocked_countries": removed_countries}
+
 @router.get("/get_content_rule",
             description="This API get the content of the rule from CRS")
 def get_content_rule(rule_file: str, id_rule: str):
