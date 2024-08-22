@@ -125,7 +125,7 @@ def get_rule_file_content(rule_name: str):
 @router.post("/update_rule_file_content", 
           description="Update the content of a rule file for all agents.")
 async def update_rule_custom(ruleModel: RuleAllModel):
-    restricted_files = ['clamscan', 'blacklistIP']
+    restricted_files = ['clamscan', 'blacklistIP', 'blocked_contries']
     rule_file_name = ruleModel.name
 
     # Kiểm tra nếu tên file nằm trong danh sách cấm
@@ -305,6 +305,7 @@ def get_content_rule(rule_file: str, id_rule: str):
         raise HTTPException(status_code=404, detail=f"Rule file {rule_file} not found.")
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to read rule file {rule_file}: {e}")
+    
 @router.get("/get_deleted_ID_Rule",
             description="This API gets deleted rule applies")
 def get_deleted_ID_Rule(ServerName: str = None, port: int = None,

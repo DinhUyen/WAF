@@ -566,6 +566,28 @@ def grap_TOP10_IP_source_addresses_json(db: Session = Depends(get_db)):
     finally:
         db.close()
 
+@router.get("/grap_TOP10_IP_source_addresses_json_byID",
+            description="This API fetches the top 10 source IP addresses for a specific agent.")
+def grap_TOP10_IP_source_addresses_json_byID(id: int, db: Session = Depends(get_db)):
+    try:
+        join_condition = or_(
+            (ModsecHost.Port.in_([80, 443]) & (ModsecHost.ServerName == ModsecLog1.request_host)),
+            ((ModsecHost.Port.notin_([80, 443])) & ((ModsecHost.ServerName + ":" + ModsecHost.Port.cast(String)) == ModsecLog1.request_host))
+        )
+
+        src_ip_data = db.query(ModsecLog1.remote_address).join(
+            ModsecHost, join_condition
+        ).filter(ModsecHost.id == id).all()
+        src_ip_counter = Counter([data.remote_address for data in src_ip_data])
+        top10_ips = src_ip_counter.most_common(10)
+        list_result = [{"ip": ip, "count": count} for ip, count in top10_ips]
+        return list_result
+    except Exception as e:
+        print(e)
+        raise HTTPException(status_code=500, detail="Internal Server Error")
+    finally:
+        db.close()
+
 @router.get("/graph-top20-rule-hit",
          description="This API fetches the top 20 rules that have been hit the most.")
 def graph_top20_rule_hit(db: Session = Depends(get_db)):
@@ -623,25 +645,21 @@ def graph_top20_rule_hit(db: Session = Depends(get_db)):
          description="This API fetches the top 10 attacks intercepted.")
 def graph_TOP10_Attacks_intercepted(db: Session = Depends(get_db)):
     try:
-        # Query the database for the top 10 attacks intercepted grouped by action_message
         top_attacks = (
             db.query(
-                ModsecLog1.action_message,
+                ModsecLog1.message_msg,
                 func.count(ModsecLog1.id).label('count')
             )
-            .group_by(ModsecLog1.action_message)
+            .filter(~ModsecLog1.message_msg.startswith("Inbound Anomaly Score Exceeded"))
+            .group_by(ModsecLog1.message_msg)
             .order_by(func.count(ModsecLog1.id).desc())
             .limit(10)
             .all()
         )
-
-        # Construct a list of dictionaries to be returned as JSON
         top_attacks_list = [
-            {"action_message": attack.action_message, "count": attack.count}
+            {"message_msg": attack.message_msg, "count": attack.count}
             for attack in top_attacks
         ]
-
-        # Return the list as JSON
         return top_attacks_list
 
     except Exception as e:
@@ -649,6 +667,7 @@ def graph_TOP10_Attacks_intercepted(db: Session = Depends(get_db)):
         raise HTTPException(status_code=500, detail="Internal Server Error")
     finally:
         db.close()
+
 
 @router.get("/graph_Passed_and_Intercepted",
          description="This API fetches the number of requests that have passed and been intercepted.")
