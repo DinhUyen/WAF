@@ -29,12 +29,13 @@ class HostAdd(BaseModel):
     ProxyPassReverse: str
     ErrorDocument: str
     Protocol: str
+    SSLEngine: str
 class HostUpdate(BaseModel):
     ProxyPreserveHost: Optional[str] = Field(default="")
     ProxyPass: Optional[str] = Field(default="")
     ProxyPassReverse: Optional[str] = Field(default="")
     ErrorDocument: Optional[str] = Field(default="")
-    Protocol: Optional[str] = Field(default="")
+    SSLEngine: Optional[str] = Field(default="")
 
 class ModsecLog1(Base):
     __tablename__ = "modseclog1"

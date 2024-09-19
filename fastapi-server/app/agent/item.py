@@ -138,7 +138,7 @@ def add_agent(agent: HostAdd, db: Session = Depends(get_db)):
             raise HTTPException(status_code=400, detail="VirtualHost with this port and ServerName already exists.")
         with open(config_file_path, 'a') as file:
             pass                
-        new_vhost = add_new_vhost_entry(agent.Port, agent.ServerName, agent.ProxyPreserveHost, f'/ {agent.ProxyPass}', f'/ {agent.ProxyPassReverse}', error_path, f'403 {agent.ErrorDocument}', agent.Protocol)
+        new_vhost = add_new_vhost_entry(agent.Port, agent.ServerName, agent.ProxyPreserveHost, f'/ {agent.ProxyPass}', f'/ {agent.ProxyPassReverse}', error_path, f'403 {agent.ErrorDocument}', agent.Protocol, agent.SSLEngine)
         with open(config_file_path, 'a') as file:
             file.write(new_vhost)
         symlink_command = [
@@ -169,10 +169,10 @@ def add_agent(agent: HostAdd, db: Session = Depends(get_db)):
             ErrorLog= error_path,
             ErrorDocument= agent.ErrorDocument,
             Protocol=agent.Protocol,
-            SSLCertificateFile = "/home/kali/Desktop/localhost.crt" if agent.Protocol == 'https' else None,  # Only for HTTPS
-            SSLCertificateKeyFile = "/home/kali/Desktop/localhost.key" if agent.Protocol == 'https' else None,  # Only for HTTPS
-            SSLEngine = "On" if agent.Protocol == 'https' else None,  # Only for HTTPS
-            SSLProxyEngine = "On" if agent.Protocol == 'https' else None # Only for HTTPS
+            SSLCertificateFile = "/home/kali/Desktop/localhost.crt" if agent.SSLEngine == 'On' else None,  # Only for HTTPS
+            SSLCertificateKeyFile = "/home/kali/Desktop/localhost.key" if agent.SSLEngine == 'On' else None,  # Only for HTTPS
+            SSLEngine = agent.SSLEngine,
+            SSLProxyEngine = "On" if agent.SSLEngine == 'On' else None # Only for HTTPS
         )
         db.add(new_host)
         db.commit()
@@ -194,17 +194,7 @@ def add_agent(agent: HostAdd, db: Session = Depends(get_db)):
 #update host's config
 @router.put("/updateagent/{host_id}")
 def update_agent(host_id: int, host_update: HostUpdate, db: Session = Depends(get_db)):
-    ssl_lines = [
-    "    SSLEngine on\n",
-    "    SSLCertificateFile /home/kali/Desktop/localhost.crt\n",
-    "    SSLCertificateKeyFile /home/kali/Desktop/localhost.key\n",
-    "    ProxyRequests Off\n",
-    "    SSLEngine On\n",
-    "    SSLProxyEngine On\n",
-    "    SSLProxyVerify none\n",
-    "    SSLProxyCheckPeerCN off\n",
-    "    SSLProxyCheckPeerName off\n"
-]
+
     # Fetch the host from the database
     db_host = db.query(ModsecHost).filter(ModsecHost.id == host_id).first()
     config_file_path = f'/etc/apache2/sites-available/{db_host.ServerName}_{db_host.Port}.conf'
@@ -214,60 +204,31 @@ def update_agent(host_id: int, host_update: HostUpdate, db: Session = Depends(ge
     # Read the Apache configuration file
     with open(config_file_path, 'r') as file:
         vhost_content = file.readlines()
-
-    # Initialize a flag to determine if the protocol has changed
-    protocol_changed = False
     config_changed = False
 
-    # Check and update fields if they are provided in the request
     for var, value in vars(host_update).items():
         if value:
             # Update the field in the database
             setattr(db_host, var, value)
             print(var)
             # Check if protocol is being updated
-            if var == "Protocol":
-                protocol_changed = True
+            if var == "SSLEngine":
                 # If changing to HTTPS, add the SSL configuration
-                if value.lower() == 'https':
-                    db_host.SSLCertificateFile = "/home/kali/Desktop/localhost.crt"
-                    db_host.SSLCertificateKeyFile = "/home/kali/Desktop/localhost.key"
+                if value == 'On':
                     db_host.SSLEngine = "On"
                     db_host.SSLProxyEngine = "On"
                 # If changing to HTTP, remove the SSL configuration
-                elif value.lower() == 'http':
-                    db_host.SSLCertificateFile = None
-                    db_host.SSLCertificateKeyFile = None
-                    db_host.SSLEngine = None
-                    db_host.SSLProxyEngine = None
+                elif value == 'Off':
+                    db_host.SSLEngine = 'Off'
+                    db_host.SSLProxyEngine = 'Off'
             config_changed = True
 
     db.commit()
 
     # If the protocol has changed, update the Apache configuration
-    if config_changed:
-        vhost_started = False
-        closing_tag_index = None
-        index_ssl=None
+    vhost_started = False 
+    if config_changed:            
         for i, line in enumerate(vhost_content):
-            if line.strip().startswith("<IfModule mod_security2.c>"):
-                index_ssl=i
-                if protocol_changed:
-                    if db_host.Protocol.lower() == 'https':
-                # Add SSL configuration lines before the closing tag
-                        vhost_content.insert(index_ssl, ''.join(ssl_lines))
-                    elif db_host.Protocol.lower() == 'http':
-                # Remove SSL configuration lines
-                        vhost_content = [
-                            line for line in vhost_content
-                            if not any(ssl_config_line.strip() in line for ssl_config_line in ssl_lines)
-                        ]
-                break
-            else:
-                index_ssl=None
-            
-        for i, line in enumerate(vhost_content):
-            print(i)
             if line.strip().startswith(f"<VirtualHost *:{db_host.Port}>"):
                 vhost_started = True
             
@@ -281,6 +242,10 @@ def update_agent(host_id: int, host_update: HostUpdate, db: Session = Depends(ge
                     vhost_content[i] = f"    ProxyPassReverse / {host_update.ProxyPassReverse}\n"
                 elif line.strip().startswith("ErrorDocument") and host_update.ErrorDocument:
                     vhost_content[i] = f"    ErrorDocument 403 {host_update.ErrorDocument}\n"
+                elif line.strip().startswith("SSLEngine") and host_update.SSLEngine:
+                    vhost_content[i] = f"    SSLEngine {host_update.SSLEngine}\n"
+                elif line.strip().startswith("SSLProxyEngine") and host_update.SSLEngine:
+                    vhost_content[i] = f"    SSLProxyEngine {host_update.SSLEngine}\n"                
             elif vhost_started and "</VirtualHost>" in line.strip():
                 vhost_started = False
         with open(config_file_path, 'w') as file:

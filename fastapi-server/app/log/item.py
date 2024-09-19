@@ -502,27 +502,41 @@ def graph_count_log_within_24h(db: Session = Depends(get_db)):
         db.close()
 
 @router.get("/graph_count_log_within_24h_byID",
-         description="This API is used to count the number of blocked requests per time interval for a specific agent.")
-def graph_count_log_within_24h_byID(id:int, db: Session = Depends(get_db)):
-    # Tạo kết nối database
+            description="This API is used to count the number of blocked requests per time interval for a specific agent.")
+def graph_count_log_within_24h_byID(id: int, db: Session = Depends(get_db)):
     list_result = []
 
     try:
+        # Lấy thời gian hiện tại và chuẩn hóa về đầu giờ tiếp theo
         current_time = datetime.now()
         if current_time.minute > 0 or current_time.second > 0 or current_time.microsecond > 0:
             current_time = current_time.replace(minute=0, second=0, microsecond=0) + timedelta(hours=1)
         start_time = current_time - timedelta(days=1)
+
         for i in range(8):
             period_start = start_time + timedelta(hours=i*3)
             period_end = start_time + timedelta(hours=(i+1)*3)
 
-           # Define the condition for joining based on the value of ModsecHost.Port
+            # Điều kiện join với ModsecHost, cần đảm bảo cột sử dụng là hợp lệ
             join_condition = or_(
-                (ModsecHost.Port.in_([80, 443]) & (ModsecHost.ServerName == ModsecLog1.request_host)),
+                (ModsecHost.Port.in_([80, 443]) & (ModsecHost.ServerName == ModsecLog1.request_host)),  # Kiểm tra request_host có tồn tại
                 ((ModsecHost.Port.notin_([80, 443])) & ((ModsecHost.ServerName + ":" + ModsecHost.Port.cast(String)) == ModsecLog1.request_host))
             )
+            join_condition2 = or_(
+                (ModsecHost.Port.in_([80, 443]) & (ModsecHost.ServerName == Request.server_name)),  # Kiểm tra request_host có tồn tại
+                ((ModsecHost.Port.notin_([80, 443])) & ((ModsecHost.ServerName + ":" + ModsecHost.Port.cast(String)) == (Request.server_name + ":" + Request.port.cast(String))))
+            )
+            # Đếm tổng số request
+            total_count = db.query(func.count(Request.id)).join(
+                ModsecHost, join_condition2  # Điều chỉnh cột join với ModsecHost cho đúng
+            ).filter(
+                Request.datetime_request >= period_start,
+                Request.datetime_request < period_end,
+                ModsecHost.id == id
+            ).scalar()
 
-            count = db.query(func.count(ModsecLog1.id)).join(
+            # Đếm số request bị chặn
+            malicious_count = db.query(func.count(distinct(ModsecLog1.request_line))).join(
                 ModsecHost, join_condition
             ).filter(
                 ModsecLog1.event_time >= period_start,
@@ -533,7 +547,8 @@ def graph_count_log_within_24h_byID(id:int, db: Session = Depends(get_db)):
             # Thêm kết quả vào danh sách
             list_result.append({
                 "time": f"{period_start.strftime('%H.%M')}-{period_end.strftime('%H.%M')}",
-                "number_of_prevented": count
+                "number_of_prevented": malicious_count,
+                "total_requests": total_count,
             })
 
         return list_result
@@ -543,6 +558,7 @@ def graph_count_log_within_24h_byID(id:int, db: Session = Depends(get_db)):
         raise HTTPException(status_code=500, detail="Internal Server Error")
     finally:
         db.close()
+
 
 @router.get("/grap_TOP10_IP_source_addresses_json",
          description="This API fetches the top 10 source IP addresses.")
@@ -667,7 +683,6 @@ def graph_TOP10_Attacks_intercepted(db: Session = Depends(get_db)):
         raise HTTPException(status_code=500, detail="Internal Server Error")
     finally:
         db.close()
-
 
 @router.get("/graph_Passed_and_Intercepted",
          description="This API fetches the number of requests that have passed and been intercepted.")

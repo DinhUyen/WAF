@@ -28,25 +28,24 @@ def restart_apache():
         print(f"Error restarting Apache: {e}")
 # Example usage:
 #update_modsecurity_config('/etc/apache2/sites-available/www.dvwa.com.conf', 80, 'DetectionOnly')
-def add_new_vhost_entry(port, servername, ProxyPreserveHost, ProxyPass, ProxyPassReverse,ErrorLog, ErrorDocument, protocol):
-        if protocol.lower() == 'https':
+def add_new_vhost_entry(port, servername, ProxyPreserveHost, ProxyPass, ProxyPassReverse,ErrorLog, ErrorDocument, protocol, SSLEngine):
+        if SSLEngine == 'On' and port != 80:
             # Construct the new VirtualHost entry for HTTPS
             return f"""
 # HTTPS VirtualHost (Reverse Proxy)
 <VirtualHost *:{port}>
     ServerName {servername}
 
-    SSLEngine on
+    SSLEngine On
     SSLCertificateFile /home/kali/Desktop/localhost.crt
     SSLCertificateKeyFile /home/kali/Desktop/localhost.key
 
     ProxyRequests Off
-
-    SSLEngine On
     SSLProxyEngine On
     SSLProxyVerify none
     SSLProxyCheckPeerCN off
     SSLProxyCheckPeerName off
+    ProxyPreserveHost {ProxyPreserveHost}
     ProxyPass {ProxyPass}
     ProxyPassReverse {ProxyPassReverse}
 
@@ -58,14 +57,25 @@ def add_new_vhost_entry(port, servername, ProxyPreserveHost, ProxyPass, ProxyPas
     </IfModule>
 </VirtualHost>
 """
-        else:  # Default to HTTP if not HTTPS
+        if SSLEngine == 'Off' and port != 443:  # Default to HTTP if not HTTPS
             # Construct the new VirtualHost entry for HTTP
             return f"""
 <VirtualHost *:{port}>
     ServerName {servername}
+
+    SSLEngine Off
+    SSLCertificateFile /home/kali/Desktop/localhost.crt
+    SSLCertificateKeyFile /home/kali/Desktop/localhost.key
+
+    ProxyRequests Off
+    SSLProxyEngine On
+    SSLProxyVerify none
+    SSLProxyCheckPeerCN off
+    SSLProxyCheckPeerName off
     ProxyPreserveHost {ProxyPreserveHost}
     ProxyPass {ProxyPass}
     ProxyPassReverse {ProxyPassReverse}
+
     ErrorLog {ErrorLog}
     ErrorDocument {ErrorDocument}
     <IfModule mod_security2.c>
@@ -74,3 +84,6 @@ def add_new_vhost_entry(port, servername, ProxyPreserveHost, ProxyPass, ProxyPas
     </IfModule>
 </VirtualHost>
 """
+        else:
+            return f"Port {port} is not use for this {protocol}."
+        
