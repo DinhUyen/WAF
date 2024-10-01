@@ -524,6 +524,23 @@ async def update_crs():
         # Trả về thông báo lỗi nếu có
         raise HTTPException(status_code=500, detail=str(e))
 
+@router.get("/get_inbound_anomaly_score_threshold")
+def get_inbound_anomaly_score_threshold():
+    try:
+        config_file_path = "/etc/modsecurity/crs/crs-setup.conf"
+        with open(config_file_path, "r") as file:
+            config_content = file.readlines()
+        pattern = re.compile(r"#  setvar:tx\.inbound_anomaly_score_threshold=(\d+)")
+        for line in config_content:
+            match = pattern.search(line)
+            if match:
+                return JSONResponse(status_code=200, content={"inbound_anomaly_score_threshold": int(match.group(1))})
+        return JSONResponse(status_code=404, content={"message": "Inbound anomaly score threshold not found."})
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail="Configuration file not found.")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"An error occurred: {str(e)}")
+
 @router.post("/update_inbound_anomaly_score_threshold")
 def update_inbound_anomaly_score_threshold(inbound_anomaly_score_threshold: int):
     try:
