@@ -4,12 +4,14 @@ from fastapi import APIRouter
 from datetime import datetime
 import subprocess
 import os
+import re
 from datetime import datetime
 from sqlalchemy.orm import Session
 from starlette.responses import Response
 from typing import List, Dict, Any
 from models.item import  RuleModel, RuleAllModel, Rule_Remove
 from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi.responses import JSONResponse
 from database import get_db
 router = APIRouter(
     prefix="/rule",
@@ -521,3 +523,28 @@ async def update_crs():
     except Exception as e:
         # Trả về thông báo lỗi nếu có
         raise HTTPException(status_code=500, detail=str(e))
+
+@router.post("/update_inbound_anomaly_score_threshold")
+def update_inbound_anomaly_score_threshold(inbound_anomaly_score_threshold: int):
+    try:
+        config_file_path = "/etc/modsecurity/crs/crs-setup.conf"
+        with open(config_file_path, "r") as file:
+            config_content = file.readlines()
+        pattern = re.compile(r"#  setvar:tx\.inbound_anomaly_score_threshold=\d+")
+        new_line = f"#  setvar:tx.inbound_anomaly_score_threshold={inbound_anomaly_score_threshold}\n"
+        updated_content = []
+        for line in config_content:
+            if pattern.search(line):
+                updated_content.append(new_line)
+            else:
+                updated_content.append(line)
+        with open(config_file_path, "w") as file:
+            file.writelines(updated_content)
+        subprocess.run(["sudo", "systemctl", "reload", "apache2"], check=True)
+        return JSONResponse(status_code=200, content={"message": "Update successful", "new_threshold": inbound_anomaly_score_threshold})
+    except PermissionError:
+        raise HTTPException(status_code=403, detail="Permission denied. Please check your file permissions.")
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail="Configuration file not found.")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"An error occurred: {str(e)}")
